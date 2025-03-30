@@ -33,7 +33,7 @@ class Preprocessor:
             dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
          
         if augment:
-            augmentation_layer = RandAugment(value_range=(0, 1), num_ops=4, seed=self.seed)
+            augmentation_layer = RandAugment(value_range=(0, 1), factor=0.25, num_ops=4, seed=self.seed)
             dataset = dataset.map(lambda x, y: (augmentation_layer(x), y))
 
         return dataset, class_names            
