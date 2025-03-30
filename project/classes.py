@@ -1,39 +1,39 @@
 import os
 import pandas as pd
 import tensorflow as tf
+import keras
 from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.utils import image_dataset_from_directory
+from keras.layers import RandAugment
+
 
 
 class Preprocessor:
-    def __init__(self, data, image_size=(224, 224), seed=42):
-        self.df = data.copy()
+    def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
         self.image_size = image_size
         self.seed = seed
+        self.batch_size = batch_size
 
-        self.label_encoder = LabelEncoder()
-        self.df['label'] = self.label_encoder.fit_transform(self.df['family'])
-        self.label_map = dict(zip(self.label_encoder.transform(self.label_encoder.classes_), self.label_encoder.classes_))
+    def load_img(self, data_dir, normalize=True, augment=False):
+    
+        dataset = image_dataset_from_directory(
+            data_dir,
+            image_size=self.image_size,
+            label_mode="categorical",
+            batch_size=self.batch_size,
+            interpolation="bilinear",
+            shuffle=True,
+            seed=self.seed
+        )
 
-    def _load_image(self, filepath, label, augment=False):
-        image = tf.io.read_file(filepath)
-        image = tf.image.decode_jpeg(image, channels=3)
-        image = tf.image.resize(image, self.image_size)
+        class_names = dataset.class_names
 
+        if normalize:
+            normalization_layer = keras.layers.Rescaling(1./255)
+            dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+         
         if augment:
-            image = tf.image.random_flip_left_right(image)
+            augmentation_layer = RandAugment(value_range=(0, 1), num_ops=4, seed=self.seed)
+            dataset = dataset.map(lambda x, y: (augmentation_layer(x), y))
 
-        image = tf.cast(image, tf.float32) / 255.0
-        return image, label
-
-    def create_dataset(self, dataframe, augment=False, batch_size=32, shuffle=True):
-        filepaths = [os.path.join(self.image_root, path) for path in dataframe['filepath']]
-        labels = dataframe['label'].values
-
-        dataset = tf.data.Dataset.from_tensor_slices((filepaths, labels))
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=len(filepaths), seed=self.seed)
-
-        dataset = dataset.map(lambda x, y: self._load_image(x, y, augment), num_parallel_calls=tf.data.AUTOTUNE)
-        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-        return dataset
+        return dataset, class_names            
