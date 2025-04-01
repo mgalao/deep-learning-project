@@ -5,7 +5,6 @@ import shutil
 from tensorflow.keras import models
 from keras.callbacks import ModelCheckpoint, CSVLogger, LearningRateScheduler
 from functools import partial
-from src.utils import exp_decay_lr_scheduler
 
 
 
@@ -96,6 +95,11 @@ def get_callbacks(checkpoint_file_path, metrics_file_path, lr_scheduler=None):
         callbacks.append(lr_scheduler_callback)
 
     return callbacks
+
+def exp_decay_lr_scheduler(epoch, lr, factor = 0.95):
+    lr *= factor
+    return lr
+
 
 def lr_scheduler(initial_lr, final_lr, n_epochs):
     factor = (final_lr / initial_lr) ** (1 / n_epochs)

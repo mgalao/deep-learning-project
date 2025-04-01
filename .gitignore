@@ -3,3 +3,7 @@ data/rare_species/
 data/train/
 data/val/
 data/test/
+logs/
+checkpoints/
+*.csv
+*.keras
