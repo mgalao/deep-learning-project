@@ -76,6 +76,9 @@ def plot_model_loss(num_epochs, train_loss, val_loss):
 
 
 def get_callbacks(checkpoint_file_path, metrics_file_path, lr_scheduler=None):
+    os.makedirs(os.path.dirname(checkpoint_file_path), exist_ok=True)
+    os.makedirs(os.path.dirname(metrics_file_path), exist_ok=True)
+
     callbacks = []
 
     checkpoint_callback = ModelCheckpoint(
