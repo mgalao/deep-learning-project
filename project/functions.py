@@ -100,3 +100,5 @@ def get_callbacks(checkpoint_file_path, metrics_file_path, lr_scheduler=None):
 def lr_scheduler(initial_lr, final_lr, n_epochs):
     factor = (final_lr / initial_lr) ** (1 / n_epochs)
     return partial(exp_decay_lr_scheduler, factor=factor)
+
+# amo o afonso
