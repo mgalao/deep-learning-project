@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 from tensorflow.keras import models
+from keras.callbacks import ModelCheckpoint, CSVLogger, LearningRateScheduler
+from functools import partial
+from src.utils import exp_decay_lr_scheduler
+
 
 
 
@@ -50,10 +54,10 @@ def build_sequential_model(list_of_layers):
     for layer in list_of_layers: model.add(layer)
     return model
 
-def plot_model_acc(num_epochs, train_loss, val_loss):
+def plot_model_acc(num_epochs, train_acc, val_acc):
     x_axis = range(1,num_epochs+1)
-    plt.plot(x_axis, train_loss, 'r', label='Training accuracy')
-    plt.plot(x_axis, val_loss, 'b', label='Validation accuracy')
+    plt.plot(x_axis, train_acc, 'r', label='Training accuracy')
+    plt.plot(x_axis, val_acc, 'b', label='Validation accuracy')
     plt.title('Training and Validation accuracy')
     plt.xlabel('Epochs')
     plt.ylabel('Accuracy')
@@ -69,3 +73,27 @@ def plot_model_loss(num_epochs, train_loss, val_loss):
     plt.ylabel('Loss')
     plt.legend()
     plt.show()
+
+
+def get_callbacks(checkpoint_file_path, metrics_file_path, lr_scheduler=None):
+    callbacks = []
+
+    checkpoint_callback = ModelCheckpoint(
+        filepath=checkpoint_file_path,
+        monitor='val_loss',
+        verbose=0
+    )
+    callbacks.append(checkpoint_callback)
+
+    metrics_callback = CSVLogger(metrics_file_path)
+    callbacks.append(metrics_callback)
+
+    if lr_scheduler is not None:
+        lr_scheduler_callback = LearningRateScheduler(lr_scheduler)
+        callbacks.append(lr_scheduler_callback)
+
+    return callbacks
+
+def lr_scheduler(initial_lr, final_lr, n_epochs):
+    factor = (final_lr / initial_lr) ** (1 / n_epochs)
+    return partial(exp_decay_lr_scheduler, factor=factor)

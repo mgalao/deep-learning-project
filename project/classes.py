@@ -14,7 +14,7 @@ class Preprocessor:
         self.seed = seed
         self.batch_size = batch_size
 
-    def load_img(self, data_dir, normalize=True, augment=False):
+    def load_img(self, data_dir, value_range=(0,1), factor=0.5, num_ops=3, normalize=True, augment=False):
     
         dataset = image_dataset_from_directory(
             data_dir,
@@ -33,7 +33,7 @@ class Preprocessor:
             dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
          
         if augment:
-            augmentation_layer = RandAugment(value_range=(0, 1), factor=0.25, num_ops=4, seed=self.seed)
+            augmentation_layer = RandAugment(value_range=value_range, factor=factor, num_ops=num_ops, seed=self.seed)
             dataset = dataset.map(lambda x, y: (augmentation_layer(x), y))
 
         return dataset, class_names            
