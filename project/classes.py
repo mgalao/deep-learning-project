@@ -28,6 +28,9 @@ class Preprocessor:
 
         class_names = dataset.class_names
 
+        auto_contrast_layer = keras.layers.AutoContrast(value_range=(0, 255))
+        dataset = dataset.map(lambda x, y: (auto_contrast_layer(x), y))
+
         if normalize:
             normalization_layer = keras.layers.Rescaling(1./255)
             dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
