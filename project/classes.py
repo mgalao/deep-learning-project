@@ -5,7 +5,7 @@ import keras
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
 from keras.layers import RandomGrayscale
-from keras_cv.layers import RandAugment, MixUp, CutMix  # Moved here correctly
+from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter 
 
 
 class Preprocessor:
@@ -14,62 +14,68 @@ class Preprocessor:
         self.seed = seed
         self.batch_size = batch_size
 
-        # Rescale images to [0, 1] before feeding into the model
-        self.base_normalize = keras.layers.Rescaling(1. / 255)
-
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
         self.augmentations = {
             "none": keras.layers.Lambda(lambda x: x),  # No augmentation. Identity function
 
             "light": keras.Sequential([
-                # Basic transformations: safe and useful for most datasets
+                # Basic and safe transformations
                 keras.layers.RandomFlip("horizontal"),
                 keras.layers.RandomRotation(0.05),
                 keras.layers.RandomZoom(0.05),
+                keras.layers.RandomContrast(0.1),
+                RandomColorJitter(  # Combines brightness, contrast, saturation, hue
+                    value_range=(0, 1), brightness_factor=0.05, contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
+                ),
+                keras.layers.RandomSharpness(factor=0.2),
             ]),
 
             "medium": keras.Sequential([
-                # Adds light color and contrast variation
+                # Adds more geometric and color variation
                 keras.layers.RandomFlip("horizontal"),
                 keras.layers.RandomRotation(0.1),
                 keras.layers.RandomZoom(0.1),
-                keras.layers.RandomContrast(0.2),
+                keras.layers.RandomTranslation(0.05, 0.05),
+                RandomColorJitter(
+                    value_range=(0, 1), brightness_factor=0.1, contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
+                ),
+                keras.layers.RandomGrayscale(factor=1.0),
+                keras.layers.RandomSharpness(factor=0.3),
             ]),
 
             "heavy": keras.Sequential([
-                # Stronger augmentations for regularization
+                # Strong augmentations for robustness and generalization
                 keras.layers.RandomFlip("horizontal_and_vertical"),
                 keras.layers.RandomRotation(0.15),
                 keras.layers.RandomZoom(0.2),
-                keras.layers.RandomContrast(0.3),
-                RandomGrayscale(factor=1.0),  # applied always
-                keras.layers.RandomBrightness(0.2),
                 keras.layers.RandomTranslation(0.1, 0.1),
+                RandomColorJitter(
+                    value_range=(0, 1), brightness_factor=0.2, contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
+                ),
+                keras.layers.RandomGrayscale(factor=1.0),
+                keras.layers.RandomSharpness(factor=0.4),
             ]),
 
             "grayscale": keras.Sequential([
-                # Forces the model to rely on shape and texture instead of color
+                # Focus on shape/patterns instead of color
                 RandomGrayscale(factor=1.0),
                 keras.layers.RandomContrast(0.4),
             ]),
 
             "randaugment": RandAugment(
-                # Applies N random powerful transformations per image
-                value_range=(0, 255),  # Must match the range before normalization
+                value_range=(0, 255),
                 augmentations_per_image=2,
                 magnitude=0.5,
                 seed=seed
             ),
 
             "mixup": MixUp(
-                # Combines two images and their labels using weighted averages
                 alpha=0.2,
                 seed=seed
             ),
 
             "cutmix": CutMix(
-                # Replaces a region of one image with a patch from another image and mixes their labels
                 alpha=1.0,
                 seed=seed
             ),
@@ -113,6 +119,13 @@ class Preprocessor:
                 raise ValueError(f"Unknown augmentation strategy: {augment}")
             aug_layer = self.augmentations[augment]
 
+            if isinstance(aug_layer, (MixUp, CutMix)):
+                # Define a function that passes a single tuple to the layer
+                def apply_mix(x, y):
+                    result = aug_layer({"images": x, "labels": y})
+                    return result["images"], result["labels"]
+
+                dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
 
             if augment_prob < 1.0:
                 aug_layer = self.augmentation_with_probability(aug_layer, prob=augment_prob)
