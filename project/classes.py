@@ -40,7 +40,6 @@ class Preprocessor:
                 RandomColorJitter(
                     value_range=(0, 1), brightness_factor=0.1, contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
                 ),
-                keras.layers.RandomGrayscale(factor=1.0),
                 keras.layers.RandomSharpness(factor=0.3),
             ]),
 
@@ -53,13 +52,12 @@ class Preprocessor:
                 RandomColorJitter(
                     value_range=(0, 1), brightness_factor=0.2, contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
                 ),
-                keras.layers.RandomGrayscale(factor=1.0),
                 keras.layers.RandomSharpness(factor=0.4),
             ]),
 
             "grayscale": keras.Sequential([
                 # Focus on shape/patterns instead of color
-                RandomGrayscale(factor=1.0),
+                self.random_grayscale_layer(1.0),
                 keras.layers.RandomContrast(0.4),
             ]),
 
@@ -112,6 +110,9 @@ class Preprocessor:
         elif normalize:
             normalization_layer = tf.keras.layers.Rescaling(1./255)
             dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+        
+
+        # -------- AUGMENTATION BLOCK --------
 
         # Apply selected augmentation strategy, if specified
         if augment:
@@ -119,23 +120,25 @@ class Preprocessor:
                 raise ValueError(f"Unknown augmentation strategy: {augment}")
             aug_layer = self.augmentations[augment]
 
+            # Handle MixUp and CutMix separately — they expect dict input and output
             if isinstance(aug_layer, (MixUp, CutMix)):
-                # Define a function that passes a single tuple to the layer
                 def apply_mix(x, y):
                     result = aug_layer({"images": x, "labels": y})
                     return result["images"], result["labels"]
-
+                
                 dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
 
-            if augment_prob < 1.0:
-                aug_layer = self.augmentation_with_probability(aug_layer, prob=augment_prob)
+            else:
+                # Apply with probability if needed
+                if augment_prob < 1.0:
+                    aug_layer = self.augmentation_with_probability(aug_layer, prob=augment_prob)
 
-            # Apply the augmentation pipeline to the images
-            dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
+                # Standard augmentation map
+                dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
 
-        # Enable caching and prefetching for performance
-        if cache:
-            dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
+            # Enable caching and prefetching for performance
+            if cache:
+                dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
 
         return dataset, class_names
 
@@ -147,3 +150,6 @@ class Preprocessor:
                 lambda: x
             )
         return keras.layers.Lambda(apply)
+    
+    def random_grayscale_layer(self, factor=1.0):
+        return keras.layers.RandomGrayscale(factor=factor)
