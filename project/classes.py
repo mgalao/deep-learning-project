@@ -102,7 +102,7 @@ class Preprocessor:
             interpolation="bilinear"  # interpolation method defines how pixel values are estimated during this resizing. "bilinear" is smooth and fast, balances quality and speed
         )
 
-        minority_indices = [class_names.index(fam) for fam in minority_class]
+
 
         class_names = dataset.class_names
         normalization_layer = tf.keras.layers.Rescaling(1./255)
