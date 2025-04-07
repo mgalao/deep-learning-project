@@ -7,13 +7,6 @@
 # path = r"/Users/margaridabravocardoso/Desktop/dsaa/fun_year/2nd_semester/deep_learning/rare_species"
 
 
-
-
-
-
-
-
-
 # Set up the ImageDataGenerators and define the augmentation parameters:
 train_datagen = ImageDataGenerator(
     #rotation_range=20,      

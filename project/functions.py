@@ -7,8 +7,6 @@ from keras.callbacks import ModelCheckpoint, CSVLogger, LearningRateScheduler
 from functools import partial
 
 
-
-
 def plot_batch(dataset, class_names, num_images, rows, cols):
 
     images, labels = next(iter(dataset))

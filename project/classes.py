@@ -6,6 +6,8 @@ from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
 from keras.layers import RandomGrayscale
 from keras_cv.layers import RandAugment, MixUp, CutMix  # Moved here correctly
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.applications import ResNet50
 
 
 class Preprocessor:
@@ -75,7 +77,7 @@ class Preprocessor:
             ),
         }
 
-    def load_img(self, data_dir, label_mode="categorical", normalize=True, augment=None, cache=True):
+    def load_img(self, data_dir, label_mode="categorical", normalize=True, augment=None, shuffle=False, cache=True):
         """
         Loads and preprocesses the image dataset.
 
@@ -86,14 +88,14 @@ class Preprocessor:
         - augment: name of the augmentation strategy to apply
         - cache: whether to use caching and prefetching for performance
         """
-
+        
         # Load dataset from directory using TensorFlow utility
         dataset = image_dataset_from_directory(
             data_dir,
             image_size=self.image_size,
             label_mode=label_mode,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
             interpolation="bilinear"  # interpolation method defines how pixel values are estimated during this resizing. "bilinear" is mmooth and fast, balances quality and speed
         )
 
