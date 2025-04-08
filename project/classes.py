@@ -16,9 +16,9 @@ class Preprocessor:
         self.seed = seed
         self.batch_size = batch_size
 
-        # Rescale images to [0, 1] before feeding into the model
+                # Rescale images to [0, 1] before feeding into the model
         self.base_normalize = keras.layers.Rescaling(1. / 255)
-
+        
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
         self.augmentations = {
