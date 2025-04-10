@@ -36,6 +36,16 @@ def organize_split(image_base_path, base_output_dir, split_df, split_name):
             print(f"Not found: {src}")
 
 
+# Repoint image paths to the new train/val/test directories
+def update_paths(df, split_name):
+    df = df.copy()
+    df["full_file_path"] = df.apply(
+        lambda row: str(Path(f"../data/rare_species/{split_name}") / str(row["family"]) / Path(row["full_file_path"]).name),
+        axis=1
+    )
+    return df
+
+
 # Prepare the datasets (image and metadata) for model training
 def build_ds_with_phylum(df, image_size=(224, 224), batch_size=32):
     image_paths = df["full_file_path"].values # get the full file paths
