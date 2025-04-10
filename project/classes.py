@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 import keras
@@ -167,25 +168,43 @@ class Experiment:
             self.image_size = image_size
             self.log_path = Path(log_path)
 
+        # Compute F1 score for the dataset
+        def _compute_f1(self, ds):
+            y_true = np.concatenate([y.numpy() for _, y in ds])
+            y_pred_probs = self.model.predict(ds)
+            y_pred = np.argmax(y_pred_probs, axis=1)
+            y_true = np.argmax(y_true, axis=1)
+            return f1_score(y_true, y_pred, average='macro')
+
+        # Called at the end of each epoch
         def on_epoch_end(self, epoch, logs=None):
             logs = logs or {}
-            history = self.model.history.history
 
-            # Get the current timestamp in YYYY-MM-DD HH:MM:SS format
+            # Compute F1 score for training and validation datasets
+            f1_train = self._compute_f1(self.train_ds)
+            f1_val = self._compute_f1(self.val_ds)
+
+            # Timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            # Round values
+            def r(val): return round(val, 4) if isinstance(val, float) else val
+            
             # Log metrics after every epoch
             results = {
                 "experiment_name": self.experiment_name,
-                "epoch": epoch + 1,  # Epoch starts from 0, but we want it to start from 1
-                "train_accuracy": logs.get("accuracy", None),
-                "val_accuracy": logs.get("val_accuracy", None),
-                "train_loss": logs.get("loss", None),
-                "val_loss": logs.get("val_loss", None),
-                "top5_accuracy": logs.get("top_k_categorical_accuracy", None),
+                "epoch": epoch + 1, # Epoch starts from 0, but we want it to start from 1
+                "train_accuracy": r(logs.get("accuracy")),
+                "val_accuracy": r(logs.get("val_accuracy")),
+                "train_loss": r(logs.get("loss")),
+                "val_loss": r(logs.get("val_loss")),
+                "f1_train": r(f1_train),
+                "f1_val": r(f1_val),
+                "top5_train_accuracy": r(logs.get("top_k_categorical_accuracy")),
+                "top5_val_accuracy": r(logs.get("val_top_k_categorical_accuracy")),
                 "batch_size": self.batch_size,
                 "image_size": f"{self.image_size[0]}x{self.image_size[1]}",
-                "timestamp": timestamp  # Add the timestamp to the results
+                "timestamp": timestamp
             }
 
             # Convert the results to DataFrame
@@ -198,25 +217,26 @@ class Experiment:
                 # If it doesn't exist, create it with the index column and the header
                 df.to_csv(self.log_path, mode='w', index=True, header=True)
 
-            print(f"✅ Logged results for epoch {epoch + 1} to {self.log_path} at {timestamp}")
+    def run_experiment(self, epochs=10, callbacks=None):
+        if callbacks is None:
+            checkpoint_file = f"best_model_{self.experiment_name}_{self.timestamp}.keras"
 
-    def run_experiment(self, epochs=10):
-        # Set up dynamic checkpoint file name based on experiment and timestamp
-        checkpoint_file = f"best_model_{self.experiment_name}_{self.timestamp}.h5"
+            experiment_logger = self.ExperimentLogger(
+                experiment_name=self.experiment_name,
+                batch_size=self.batch_size,
+                image_size=self.image_size
+            )
 
-        # Define callbacks
-        experiment_logger = self.ExperimentLogger(
-            experiment_name=self.experiment_name,
-            batch_size=self.batch_size,
-            image_size=self.image_size
+            callbacks = [
+                experiment_logger,
+                EarlyStopping(patience=3, restore_best_weights=True),
+                ModelCheckpoint(checkpoint_file, save_best_only=True)
+            ]
+
+        history = self.model.fit(
+            self.train_ds,
+            validation_data=self.val_ds,
+            epochs=epochs,
+            callbacks=callbacks
         )
-
-        callbacks = [
-            experiment_logger,  # Log experiment results after each epoch
-            EarlyStopping(patience=3, restore_best_weights=True),  # Early stopping callback
-            ModelCheckpoint(checkpoint_file, save_best_only=True)  # Save best model based on validation performance
-        ]
-
-        # Train the model with callbacks
-        history = self.model.fit(self.train_ds, validation_data=self.val_ds, epochs=epochs, callbacks=callbacks)
         return history
