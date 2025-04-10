@@ -9,7 +9,7 @@ from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
 
 
 class Preprocessor:
-    def _init_(self, image_size=(224, 224), seed=42, batch_size=32):
+    def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
         self.image_size = image_size
         self.seed = seed
         self.batch_size = batch_size
@@ -79,7 +79,7 @@ class Preprocessor:
             ),
         }
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0):
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, train=False):
         """
         Loads and preprocesses the image dataset.
 
@@ -102,10 +102,44 @@ class Preprocessor:
             interpolation="bilinear"  # interpolation method defines how pixel values are estimated during this resizing. "bilinear" is smooth and fast, balances quality and speed
         )
 
-
-
         class_names = dataset.class_names
+        self.class_names = class_names
         normalization_layer = tf.keras.layers.Rescaling(1./255)
+
+        if train:
+            # minority_indices = [class_names.index(fam) for fam in minority_class]
+            minority_indices = [self.class_names.index(name) for name in minority_class]
+
+            # for images, labels in dataset:
+            #    for i in range(len(labels)):
+            #        label = tf.argmax(labels[i]).numpy()
+            #        if label in minority_indices:
+            #            print("aaa")
+
+            # Function to oversample minority class samples
+            def oversample_minority(image_batch, label_batch):
+                # Get class indices from one-hot encoded labels
+                class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+                minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
+
+                # Boolean mask for minority class samples
+                is_minority = tf.reduce_any(
+                    tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
+                )
+
+                # Select minority samples
+                minority_images = tf.boolean_mask(image_batch, is_minority)
+                minority_labels = tf.boolean_mask(label_batch, is_minority)
+
+                # Duplicate them (once, can duplicate more if needed)
+                image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+                label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+                return image_batch_augmented, label_batch_augmented
+
+            # Apply the oversampling logic to the dataset
+            dataset = dataset.map(oversample_minority, num_parallel_calls=tf.data.AUTOTUNE)
+        
 
         if preprocessing_function is not None:
             dataset = dataset.map(lambda x, y: (preprocessing_function(x), y))
