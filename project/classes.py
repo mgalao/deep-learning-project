@@ -170,19 +170,29 @@ class Experiment:
 
         # Compute F1 score for the dataset
         def _compute_f1(self, ds):
+            # Get true labels
             y_true = np.concatenate([y.numpy() for _, y in ds])
+            
+            # Predict on the dataset
             y_pred_probs = self.model.predict(ds)
             y_pred = np.argmax(y_pred_probs, axis=1)
+            
+            # Get true labels as argmax (if one-hot encoded)
             y_true = np.argmax(y_true, axis=1)
-            return f1_score(y_true, y_pred, average='macro')
+            
+            # Compute F1 scores
+            f1_macro = f1_score(y_true, y_pred, average='macro')
+            f1_weighted = f1_score(y_true, y_pred, average='weighted')
+            
+            return f1_macro, f1_weighted
 
         # Called at the end of each epoch
         def on_epoch_end(self, epoch, logs=None):
             logs = logs or {}
 
             # Compute F1 score for training and validation datasets
-            f1_train = self._compute_f1(self.train_ds)
-            f1_val = self._compute_f1(self.val_ds)
+            f1_train_macro, f1_train_weighted = self._compute_f1(self.train_ds)
+            f1_val_macro, f1_val_weighted = self._compute_f1(self.val_ds)
 
             # Timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -193,13 +203,15 @@ class Experiment:
             # Log metrics after every epoch
             results = {
                 "experiment_name": self.experiment_name,
-                "epoch": epoch + 1, # Epoch starts from 0, but we want it to start from 1
+                "epoch": epoch + 1,  # Epoch starts from 0, but we want it to start from 1
                 "train_accuracy": r(logs.get("accuracy")),
                 "val_accuracy": r(logs.get("val_accuracy")),
                 "train_loss": r(logs.get("loss")),
                 "val_loss": r(logs.get("val_loss")),
-                "f1_train": r(f1_train),
-                "f1_val": r(f1_val),
+                "f1_train_macro": r(f1_train_macro),
+                "f1_val_macro": r(f1_val_macro),
+                "f1_train_weighted": r(f1_train_weighted),
+                "f1_val_weighted": r(f1_val_weighted),
                 "top5_train_accuracy": r(logs.get("top_k_categorical_accuracy")),
                 "top5_val_accuracy": r(logs.get("val_top_k_categorical_accuracy")),
                 "batch_size": self.batch_size,
