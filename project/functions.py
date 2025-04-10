@@ -38,9 +38,9 @@ def organize_split(image_base_path, base_output_dir, split_df, split_name):
 def plot_graph(title, xlabel, ylabel, counts):
     plt.figure(figsize=(10, 6))
     counts.plot(kind='bar', color='midnightblue')
-    plt.title('Distribution of Observations Across Kingdom')
-    plt.xlabel('Label')
-    plt.ylabel('Number of Observations')
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.xticks(rotation=90) 
     plt.tight_layout()
     plt.show()
