@@ -31,7 +31,7 @@ def organize_split(image_base_path, base_output_dir, split_df, split_name):
 
         os.makedirs(dst.parent, exist_ok=True)
         try:
-            shutil.move(src, dst)
+            shutil.copy(src, dst)
         except FileNotFoundError:
             print(f"Not found: {src}")
 
