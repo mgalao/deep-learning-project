@@ -35,6 +35,29 @@ def organize_split(image_base_path, base_output_dir, split_df, split_name):
         except FileNotFoundError:
             print(f"Not found: {src}")
 
+
+# Prepare the datasets (image and metadata) for model training
+def build_ds_with_phylum(df, image_size=(224, 224), batch_size=32):
+    image_paths = df["full_file_path"].values # get the full file paths
+    # Convert the one-hot encoded columns to numpy arrays
+    phylum_onehot = np.stack(df["phylum_onehot"].values)
+    family_onehot = np.stack(df["family_onehot"].values)
+
+    # Preprocess the images and metadata
+    def process(image_path, phylum, family):
+        image = tf.io.read_file(image_path) # read the image file
+        image = tf.image.decode_jpeg(image, channels=3) # decode the image
+        image = tf.image.resize(image, image_size) # resize the image
+        image = tf.keras.applications.resnet50.preprocess_input(image) # preprocess the image
+        return {"image_input": image, "phylum_input": phylum}, family
+
+    # Create a TensorFlow dataset from the image paths and metadata
+    ds = tf.data.Dataset.from_tensor_slices((image_paths, phylum_onehot, family_onehot)) # create a dataset from the image paths and metadata
+    ds = ds.map(lambda x, y, z: process(x, y, z), num_parallel_calls=tf.data.AUTOTUNE) # map the process function to the dataset
+    ds = ds.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE) # shuffle the dataset, batch it, and prefetch it for performance
+    return ds
+
+
 def plot_graph(title, xlabel, ylabel, counts):
     plt.figure(figsize=(10, 6))
     counts.plot(kind='bar', color='midnightblue')
