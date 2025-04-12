@@ -5,6 +5,8 @@ import shutil
 from tensorflow.keras import models
 from keras.callbacks import ModelCheckpoint, CSVLogger, LearningRateScheduler
 from functools import partial
+from pathlib import Path
+import tensorflow as tf
 
 
 def plot_batch(dataset, class_names, num_images, rows, cols):
@@ -24,9 +26,10 @@ def plot_batch(dataset, class_names, num_images, rows, cols):
         
     plt.show()
 
+
 def organize_split(image_base_path, base_output_dir, split_df, split_name):
     for _, row in split_df.iterrows():
-        src = image_base_path / row["full_file_path"]
+        src = Path(row["full_file_path"])
         dst = base_output_dir / split_name / str(row["family"]) / src.name
 
         os.makedirs(dst.parent, exist_ok=True)
@@ -34,6 +37,14 @@ def organize_split(image_base_path, base_output_dir, split_df, split_name):
             shutil.copy(src, dst)
         except FileNotFoundError:
             print(f"Not found: {src}")
+
+
+# Clean up the folders that are not needed
+def cleanup_folders(base_path):
+    keep_folders = {"train", "val", "test"}
+    for item in base_path.iterdir():
+        if item.is_dir() and item.name not in keep_folders:
+            shutil.rmtree(item)
 
 
 # Repoint image paths to the new train/val/test directories
@@ -84,6 +95,7 @@ def build_sequential_model(list_of_layers):
     for layer in list_of_layers: model.add(layer)
     return model
 
+
 def plot_model_acc(num_epochs, train_acc, val_acc):
     x_axis = range(1,num_epochs+1)
     plt.plot(x_axis, train_acc, 'r', label='Training accuracy')
@@ -93,6 +105,7 @@ def plot_model_acc(num_epochs, train_acc, val_acc):
     plt.ylabel('Accuracy')
     plt.legend()
     plt.show()
+
 
 def plot_model_loss(num_epochs, train_loss, val_loss):
     x_axis = range(1,num_epochs+1)
@@ -126,6 +139,7 @@ def get_callbacks(checkpoint_file_path, metrics_file_path, lr_scheduler=None):
         callbacks.append(lr_scheduler_callback)
 
     return callbacks
+
 
 def exp_decay_lr_scheduler(epoch, lr, factor = 0.95):
     lr *= factor

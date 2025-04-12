@@ -3,12 +3,16 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import keras
+from pathlib import Path
+from datetime import datetime
+from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
 from keras.layers import RandomGrayscale
 from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.applications import ResNet50
+from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
 
 class Preprocessor:
@@ -276,32 +280,28 @@ class Experiment:
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     class ExperimentLogger(Callback):
-        def __init__(self, experiment_name, batch_size, image_size, log_path="experiment_log.csv"):
+        def __init__(self, experiment_name, batch_size, image_size, train_ds, val_ds, log_path="experiment_log.csv"):
             super().__init__()
             self.experiment_name = experiment_name
             self.batch_size = batch_size
             self.image_size = image_size
             self.log_path = Path(log_path)
 
-        # Compute F1 score for the dataset
+            # Store the datasets
+            self.train_ds = train_ds
+            self.val_ds = val_ds
+
         def _compute_f1(self, ds):
-            # Get true labels
             y_true = np.concatenate([y.numpy() for _, y in ds])
-            
-            # Predict on the dataset
             y_pred_probs = self.model.predict(ds)
             y_pred = np.argmax(y_pred_probs, axis=1)
-            
-            # Get true labels as argmax (if one-hot encoded)
             y_true = np.argmax(y_true, axis=1)
             
-            # Compute F1 scores
             f1_macro = f1_score(y_true, y_pred, average='macro')
             f1_weighted = f1_score(y_true, y_pred, average='weighted')
             
             return f1_macro, f1_weighted
 
-        # Called at the end of each epoch
         def on_epoch_end(self, epoch, logs=None):
             logs = logs or {}
 
@@ -309,16 +309,13 @@ class Experiment:
             f1_train_macro, f1_train_weighted = self._compute_f1(self.train_ds)
             f1_val_macro, f1_val_weighted = self._compute_f1(self.val_ds)
 
-            # Timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Round values
             def r(val): return round(val, 4) if isinstance(val, float) else val
-            
-            # Log metrics after every epoch
+
             results = {
                 "experiment_name": self.experiment_name,
-                "epoch": epoch + 1,  # Epoch starts from 0, but we want it to start from 1
+                "epoch": epoch + 1,
                 "train_accuracy": r(logs.get("accuracy")),
                 "val_accuracy": r(logs.get("val_accuracy")),
                 "train_loss": r(logs.get("loss")),
@@ -334,36 +331,55 @@ class Experiment:
                 "timestamp": timestamp
             }
 
-            # Convert the results to DataFrame
             df = pd.DataFrame([results])
 
-            # If the CSV file already exists, append to it with an index
             if self.log_path.exists():
                 df.to_csv(self.log_path, mode='a', header=False, index=True)
             else:
-                # If it doesn't exist, create it with the index column and the header
                 df.to_csv(self.log_path, mode='w', index=True, header=True)
 
     def run_experiment(self, epochs=10, callbacks=None):
-        if callbacks is None:
-            checkpoint_file = f"best_model_{self.experiment_name}_{self.timestamp}.keras"
+        # Check if a model checkpoint exists
+        checkpoint_file = f"best_model_{self.experiment_name}_{self.timestamp}.keras"
+        checkpoint_path = '/content/drive/MyDrive/' + checkpoint_file  # Save to Google Drive
 
-            experiment_logger = self.ExperimentLogger(
+        # If model exists, load it and resume from the last epoch
+        if os.path.exists(checkpoint_path):
+            print(f"Loading model from checkpoint: {checkpoint_path}")
+            self.model = load_model(checkpoint_path)
+
+            # Check for the last epoch based on the model filename
+            initial_epoch = int(checkpoint_file.split('_')[-1].split('.')[0])
+        else:
+            print("No checkpoint found, starting from scratch.")
+            initial_epoch = 0  # Start from epoch 0 if no checkpoint is found
+
+        # Define default callbacks
+        default_callbacks = [
+            self.ExperimentLogger(
                 experiment_name=self.experiment_name,
                 batch_size=self.batch_size,
-                image_size=self.image_size
-            )
+                image_size=self.image_size,
+                train_ds=self.train_ds,
+                val_ds=self.val_ds
+            ),
+            EarlyStopping(patience=3, restore_best_weights=True),
+            ModelCheckpoint(checkpoint_path, save_best_only=True)
+        ]
 
-            callbacks = [
-                experiment_logger,
-                EarlyStopping(patience=3, restore_best_weights=True),
-                ModelCheckpoint(checkpoint_file, save_best_only=True)
-            ]
+        # If additional callbacks are provided, extend the list
+        if callbacks:
+            all_callbacks = default_callbacks + callbacks
+        else:
+            all_callbacks = default_callbacks
 
+        # Start the training process, continue from the last saved epoch if applicable
         history = self.model.fit(
             self.train_ds,
             validation_data=self.val_ds,
             epochs=epochs,
-            callbacks=callbacks
+            initial_epoch=initial_epoch,  # Continue from the last completed epoch
+            callbacks=all_callbacks,
+            verbose=1
         )
         return history
