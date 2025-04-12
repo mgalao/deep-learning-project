@@ -10,6 +10,8 @@ from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
 from keras.layers import RandomGrayscale
 from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
+from tensorflow.keras.models import load_model
+import glob
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.applications import ResNet50
 from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
@@ -339,20 +341,29 @@ class Experiment:
                 df.to_csv(self.log_path, mode='w', index=True, header=True)
 
     def run_experiment(self, epochs=10, callbacks=None):
-        # Check if a model checkpoint exists
-        checkpoint_file = f"best_model_{self.experiment_name}_{self.timestamp}.keras"
-        checkpoint_path = '/content/drive/MyDrive/' + checkpoint_file  # Save to Google Drive
+        # Find the most recent checkpoint for this experiment
+        pattern = f"../project/best_model_{self.experiment_name}_*.keras"
+        checkpoint_files = sorted(glob.glob(pattern))
 
-        # If model exists, load it and resume from the last epoch
-        if os.path.exists(checkpoint_path):
-            print(f"Loading model from checkpoint: {checkpoint_path}")
-            self.model = load_model(checkpoint_path)
+        initial_epoch = 0
 
-            # Check for the last epoch based on the model filename
-            initial_epoch = int(checkpoint_file.split('_')[-1].split('.')[0])
+        if checkpoint_files and os.path.exists(self.log_path):
+            latest_checkpoint = checkpoint_files[-1]  # last one (assuming sorted by name/timestamp)
+            try:
+                log_df = pd.read_csv(self.log_path)
+                if "epoch" in log_df.columns and not log_df.empty:
+                    initial_epoch = int(log_df["epoch"].max()) + 1
+                    print(f"Resuming training from epoch {initial_epoch}")
+                    self.model = load_model(latest_checkpoint)
+            except Exception as e:
+                print(f"Could not read log file or load model: {e}")
+                print("Starting from scratch.")
         else:
             print("No checkpoint found, starting from scratch.")
-            initial_epoch = 0  # Start from epoch 0 if no checkpoint is found
+
+        # Save to a new file (or overwrite last)
+        self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        new_checkpoint_path = f"/content/drive/MyDrive/College/MSc/2nd Semester/Deep Learning/project/best_model_{self.experiment_name}_{self.timestamp}.keras"
 
         # Define default callbacks
         default_callbacks = [
@@ -364,22 +375,22 @@ class Experiment:
                 val_ds=self.val_ds
             ),
             EarlyStopping(patience=3, restore_best_weights=True),
-            ModelCheckpoint(checkpoint_path, save_best_only=True)
+            ModelCheckpoint(new_checkpoint_path, save_best_only=True)
         ]
 
-        # If additional callbacks are provided, extend the list
         if callbacks:
             all_callbacks = default_callbacks + callbacks
         else:
             all_callbacks = default_callbacks
 
-        # Start the training process, continue from the last saved epoch if applicable
+        # Train
         history = self.model.fit(
             self.train_ds,
             validation_data=self.val_ds,
             epochs=epochs,
-            initial_epoch=initial_epoch,  # Continue from the last completed epoch
+            initial_epoch=initial_epoch,
             callbacks=all_callbacks,
             verbose=1
         )
+
         return history
