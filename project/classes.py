@@ -16,6 +16,7 @@ from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.applications import ResNet50
 from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
+'''
 
 class Preprocessor:
     def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
@@ -86,6 +87,22 @@ class Preprocessor:
                 seed=seed
             ),
 
+            "mixup_grey": keras.Sequential([
+                # Acho que aqui podíamos adicionar outro tipo de augmentations com uma dada probabilidade
+                MixUp(
+                # Mixes 2 images - alpha controls the parameter of the beta dsitribution 
+                # where the coefficient for the linear combination is sampled
+                # =0.2 is a default parameter, usually mixed images more similar to the one of the originals
+                # Encorages generalization, reduces overfitting 
+                alpha=0.2,
+                seed=seed
+                ),
+                self.random_grayscale_layer(1.0),
+                keras.layers.RandomContrast(0.4),
+            ]),
+            
+            
+        
             "cutmix": CutMix(
                 # Cuts a part of one image and past it in another, and mixes the labels
                 # Alpha is the parameter of the bata distribution that samples lambda, 
@@ -95,7 +112,7 @@ class Preprocessor:
             ),
         }
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False):
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, use_plylum = False, preprocessing_function=None, normalization=True, augment_prob=1.0, oversampling=False):
         
         """
         Parameters:
@@ -195,13 +212,13 @@ class Preprocessor:
 
                 # applying the augmentation layer
                 dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
-                if preprocessing_function is None:
+                if preprocessing_function is None and normalization:
                     dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
             
             # if the augmentation methods do not change the color of the images, 
             # than we do normalization before applying augmentation 
             else:
-                if preprocessing_function is None:
+                if preprocessing_function is None and normalization:
                     dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
 
                 if augment not in self.augmentations:
@@ -253,7 +270,7 @@ class Preprocessor:
                     # applying the augmentation layer
                     dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
         else:
-            if preprocessing_function is None:
+            if preprocessing_function is None and normalization:
                 dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
 
         # Enable caching and prefetching for performance
@@ -266,6 +283,39 @@ class Preprocessor:
     # defining funtion for the grey scale layer
     def random_grayscale_layer(self, factor=1.0):
         return keras.layers.RandomGrayscale(factor=factor)
+'''
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Experiment:
@@ -340,7 +390,7 @@ class Experiment:
             else:
                 df.to_csv(self.log_path, mode='w', index=True, header=True)
 
-    def run_experiment(self, epochs=10, callbacks=None):
+    def run_experiment(self, epochs=10, callbacks=None, steps_per_epoch=200):
         # Find the most recent checkpoint for this experiment
         pattern = f"../project/best_model_{self.experiment_name}_*.keras"
         checkpoint_files = sorted(glob.glob(pattern))
@@ -363,7 +413,7 @@ class Experiment:
 
         # Save to a new file (or overwrite last)
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        new_checkpoint_path = f"/content/drive/MyDrive/College/MSc/2nd Semester/Deep Learning/project/best_model_{self.experiment_name}_{self.timestamp}.keras"
+        new_checkpoint_path = f"C:/Users/Carolina/Documents/MESTRADO/2 SEMESTRE/deep-learning-project/checkpoints/best_model_{self.experiment_name}_{self.timestamp}.keras"
 
         # Define default callbacks
         default_callbacks = [
@@ -374,7 +424,7 @@ class Experiment:
                 train_ds=self.train_ds,
                 val_ds=self.val_ds
             ),
-            EarlyStopping(patience=3, restore_best_weights=True),
+            EarlyStopping(patience=10, restore_best_weights=True),
             ModelCheckpoint(new_checkpoint_path, save_best_only=True)
         ]
 
@@ -390,7 +440,8 @@ class Experiment:
             epochs=epochs,
             initial_epoch=initial_epoch,
             callbacks=all_callbacks,
-            verbose=1
+            verbose=3,
+            steps_per_epoch=steps_per_epoch
         )
 
         return history
