@@ -149,8 +149,7 @@ def build_ds_with_phylum_augmentation(
         ds = tf.data.Dataset.sample_from_datasets(
             [majority_raw_ds, minority_raw_ds],
             weights=[1.0 - minority_weight, minority_weight],
-            seed=seed
-        )
+            seed=seed)
 
         steps_per_epoch = int(len(majority_df) / ((1.0 - minority_weight) * batch_size))
 

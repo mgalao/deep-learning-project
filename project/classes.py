@@ -16,7 +16,7 @@ from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.applications import ResNet50
 from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
-'''
+
 
 class Preprocessor:
     def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
@@ -101,7 +101,6 @@ class Preprocessor:
                 keras.layers.RandomContrast(0.4),
             ]),
             
-            
         
             "cutmix": CutMix(
                 # Cuts a part of one image and past it in another, and mixes the labels
@@ -112,7 +111,7 @@ class Preprocessor:
             ),
         }
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, use_plylum = False, preprocessing_function=None, normalization=True, augment_prob=1.0, oversampling=False):
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, normalization=True, augment_prob=1.0, oversampling=False):
         
         """
         Parameters:
@@ -154,7 +153,6 @@ class Preprocessor:
             #        label = tf.argmax(labels[i]).numpy()
             #        if label in minority_indices:
             #            print("aaa")
-
             # Function to oversample minority class samples
             def oversample_minority(image_batch, label_batch):
 
@@ -283,7 +281,7 @@ class Preprocessor:
     # defining funtion for the grey scale layer
     def random_grayscale_layer(self, factor=1.0):
         return keras.layers.RandomGrayscale(factor=factor)
-'''
+
 
 
 
