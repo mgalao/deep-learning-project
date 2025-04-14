@@ -23,7 +23,7 @@ class Preprocessor:
         # Setting the image size and the batch size
         self.image_size = image_size
         self.seed = seed
-        self.batch_size = batch_size
+        self.batch_size = round(batch_size * 0.75)
 
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
@@ -64,9 +64,15 @@ class Preprocessor:
                 keras.layers.RandomSharpness(factor=0.4),
             ]),
 
+            # "grayscale": keras.Sequential([
+            #     # Acho que aqui podíamos adicionar outro tipo de augmentations com uma dada probabilidade
+            #     keras.layers.RandomGrayscale(factor=1.0),
+            #     keras.layers.RandomContrast(0.4),
+            # ]),
+
             "grayscale": keras.Sequential([
-                # Acho que aqui podíamos adicionar outro tipo de augmentations com uma dada probabilidade
-                self.random_grayscale_layer(1.0),
+                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
                 keras.layers.RandomContrast(0.4),
             ]),
 
@@ -139,7 +145,38 @@ class Preprocessor:
             #            print("aaa")
 
             # Function to oversample minority class samples
-            def oversample_minority(image_batch, label_batch):
+            # def oversample_minority(image_batch, label_batch):
+
+            #     # Get class indices from one-hot encoded labels
+            #     class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+            #     minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
+
+            #     # Boolean mask for minority class samples
+            #     is_minority = tf.reduce_any(
+            #         tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
+            #     )
+
+            #     # Select minority samples
+            #     minority_images = tf.boolean_mask(image_batch, is_minority)
+            #     minority_labels = tf.boolean_mask(label_batch, is_minority)
+
+            #     # Duplicate them (once, can duplicate more if needed)   
+            #     image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+            #     label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+            #     # Shuffle the augmented batch
+            #     indices = tf.range(tf.shape(image_batch_augmented)[0])
+            #     shuffled_indices = tf.random.shuffle(indices)
+            #     image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
+            #     label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
+
+
+            #     return image_batch_augmented, label_batch_augmented
+
+
+            def oversample_minority_fixed_size(image_batch, label_batch):
+                # Target batch size
+                target_size = round(self.batch_size / 0.75)
 
                 # Get class indices from one-hot encoded labels
                 class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
@@ -154,21 +191,42 @@ class Preprocessor:
                 minority_images = tf.boolean_mask(image_batch, is_minority)
                 minority_labels = tf.boolean_mask(label_batch, is_minority)
 
-                # Duplicate them (once, can duplicate more if needed)   
+                # Augment: add minority samples to original batch
                 image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
                 label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
 
-                # Shuffle the augmented batch
+                # Shuffle
                 indices = tf.range(tf.shape(image_batch_augmented)[0])
                 shuffled_indices = tf.random.shuffle(indices)
                 image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
                 label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
 
+                current_size = tf.shape(image_batch_augmented)[0]
 
-                return image_batch_augmented, label_batch_augmented
+                # If too large → truncate
+                def truncate():
+                    return image_batch_augmented[:target_size], label_batch_augmented[:target_size]
+
+                # If too small → resample to reach size
+                def pad():
+                    needed = target_size - current_size
+                    rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
+                    extra_images = tf.gather(image_batch_augmented, rand_indices)
+                    extra_labels = tf.gather(label_batch_augmented, rand_indices)
+                    return tf.concat([image_batch_augmented, extra_images], axis=0), tf.concat([label_batch_augmented, extra_labels], axis=0)
+
+                # Choose truncate or pad based on current size
+                image_batch_final, label_batch_final = tf.cond(
+                    current_size > target_size,
+                    true_fn=truncate,
+                    false_fn=pad
+                )
+
+                return image_batch_final, label_batch_final
+
 
             # Apply the oversampling logic to the dataset
-            dataset = dataset.map(oversample_minority, num_parallel_calls=tf.data.AUTOTUNE)
+            dataset = dataset.map(oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
         
 
         if preprocessing_function is not None:
