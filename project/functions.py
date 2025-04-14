@@ -27,16 +27,23 @@ def plot_batch(dataset, class_names, num_images, rows, cols):
     plt.show()
 
 
-def organize_split(image_base_path, base_output_dir, split_df, split_name):
+def organize_split(image_base_path, base_output_dir, split_df, copy, split_name):
     for _, row in split_df.iterrows():
         src = Path(row["full_file_path"])
         dst = base_output_dir / split_name / str(row["family"]) / src.name
 
         os.makedirs(dst.parent, exist_ok=True)
-        try:
-            shutil.copy(src, dst)
-        except FileNotFoundError:
-            print(f"Not found: {src}")
+        if copy==True:
+            try:
+                shutil.copy(src, dst)
+            except FileNotFoundError:
+                print(f"Not found: {src}")
+        else:
+            try:
+                shutil.move(src, dst)
+            except FileNotFoundError:
+                print(f"Not found: {src}")
+            
 
 
 # Clean up the folders that are not needed
