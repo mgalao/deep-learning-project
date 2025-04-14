@@ -363,7 +363,7 @@ class Experiment:
 
         # Save to a new file (or overwrite last)
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        new_checkpoint_path = f"/content/drive/MyDrive/College/MSc/2nd Semester/Deep Learning/project/best_model_{self.experiment_name}_{self.timestamp}.keras"
+        new_checkpoint_path = f"project/best_model_{self.experiment_name}_{self.timestamp}.keras"
 
         # Define default callbacks
         default_callbacks = [
