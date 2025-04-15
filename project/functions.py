@@ -86,6 +86,42 @@ def build_ds_with_phylum(df, image_size=(224, 224), batch_size=32):
     return ds
 
 
+def build_ds_with_phylum_augmented(df, data_dir, preprocess, minority_class=None, 
+                                   augment=None, oversampling=False, 
+                                   batch_size=32, cache=True, shuffle=True):
+    # Use Preprocessor to create image-only dataset
+    image_ds, class_names = preprocess.load_img(
+        data_dir=data_dir,
+        minority_class=minority_class,
+        augment=augment,
+        oversampling=oversampling,
+        cache=cache
+    )
+
+    # Get phylum one-hot encoded vectors from the dataframe
+    phylum_onehot = np.stack(df["phylum_onehot"].values)  # Ensure shape is (n_samples, num_phylum_features)
+
+    # Create a TF dataset for phylum metadata
+    phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
+
+    # Zip images with metadata (this creates a combined dataset)
+    combined_ds = tf.data.Dataset.zip((image_ds, phylum_ds))
+
+    # Map to model input format (image_input, phylum_input, label)
+    combined_ds = combined_ds.map(lambda img, phylum: (
+        {"image_input": img[0], "phylum_input": phylum}, img[1]  # Image and phylum are input, label is img[1]
+    ), num_parallel_calls=tf.data.AUTOTUNE)
+
+    # Optional shuffle
+    if shuffle:
+        combined_ds = combined_ds.shuffle(buffer_size=1000)
+
+    # Batch and prefetch
+    combined_ds = combined_ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+    return combined_ds, class_names
+
+
 def plot_graph(title, xlabel, ylabel, counts):
     plt.figure(figsize=(10, 6))
     counts.plot(kind='bar', color='midnightblue')
