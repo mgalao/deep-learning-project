@@ -23,7 +23,7 @@ class Preprocessor:
         # Setting the image size and the batch size
         self.image_size = image_size
         self.seed = seed
-        self.batch_size = round(batch_size * 0.75)
+        self.batch_size = batch_size
 
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
@@ -115,13 +115,17 @@ class Preprocessor:
         - augment_prob: float in [0,1] that controls probability of applying augmentation
         - oversampling: if we want to do oversampling
         """
+        if oversampling==True:
+            batch_size = round(self.batch_size * 0.75)
+        else:
+            batch_size = self.batch_size
 
         # Load dataset from directory using TensorFlow utility
         dataset = image_dataset_from_directory(
             data_dir,
             image_size=self.image_size,
             label_mode=label_mode,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=True,
             interpolation="bilinear"  # interpolation method defines how pixel values are estimated during this resizing. "bilinear" is smooth and fast, balances quality and speed
         )
