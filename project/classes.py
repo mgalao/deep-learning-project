@@ -331,7 +331,7 @@ class Preprocessor:
 
 
 class Experiment:
-    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv"):
+    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True):
         self.model = model
         self.train_ds = train_ds
         self.val_ds = val_ds
@@ -339,87 +339,83 @@ class Experiment:
         self.batch_size = batch_size
         self.image_size = image_size
         self.log_path = Path(log_path)
+        self.resume = resume
 
-        # Generate a unique timestamp for this experiment
+        # Generate a timestamp
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
+        # Determine experiment ID
+        if self.log_path.exists():
+            log_df = pd.read_csv(self.log_path)
+            if not resume:
+                self.experiment_id = log_df["id"].max() + 1 if not log_df.empty else 0
+            else:
+                if experiment_name in log_df["experiment_name"].unique():
+                    self.experiment_id = log_df[log_df["experiment_name"] == experiment_name]["id"].iloc[0]
+                else:
+                    self.experiment_id = log_df["id"].max() + 1 if not log_df.empty else 0
+        else:
+            self.experiment_id = 0
+
     class ExperimentLogger(Callback):
-        def __init__(self, experiment_name, batch_size, image_size, train_ds, val_ds, log_path="experiment_log.csv"):
+        def __init__(self, experiment_name, experiment_id, train_ds, val_ds, log_path="experiment_log.csv"):
             super().__init__()
             self.experiment_name = experiment_name
-            self.batch_size = batch_size
-            self.image_size = image_size
+            self.experiment_id = experiment_id
             self.log_path = Path(log_path)
-
-            # Store the datasets
             self.train_ds = train_ds
             self.val_ds = val_ds
 
-        def _compute_f1(self, ds):
-            y_true = np.concatenate([y.numpy() for _, y in ds])
-            y_pred_probs = self.model.predict(ds)
-            y_pred = np.argmax(y_pred_probs, axis=1)
-            y_true = np.argmax(y_true, axis=1)
-            
-            f1_macro = f1_score(y_true, y_pred, average='macro')
-            f1_weighted = f1_score(y_true, y_pred, average='weighted')
-            
-            return f1_macro, f1_weighted
-
         def on_epoch_end(self, epoch, logs=None):
             logs = logs or {}
-
-            # Compute F1 score for training and validation datasets
-            f1_train_macro, f1_train_weighted = self._compute_f1(self.train_ds)
-            f1_val_macro, f1_val_weighted = self._compute_f1(self.val_ds)
-
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             def r(val): return round(val, 4) if isinstance(val, float) else val
-
+            
             results = {
+                "id": self.experiment_id,
                 "experiment_name": self.experiment_name,
                 "epoch": epoch + 1,
                 "train_accuracy": r(logs.get("accuracy")),
                 "val_accuracy": r(logs.get("val_accuracy")),
                 "train_loss": r(logs.get("loss")),
                 "val_loss": r(logs.get("val_loss")),
-                "f1_train_macro": r(f1_train_macro),
-                "f1_val_macro": r(f1_val_macro),
-                "f1_train_weighted": r(f1_train_weighted),
-                "f1_val_weighted": r(f1_val_weighted),
-                "top5_train_accuracy": r(logs.get("top_k_categorical_accuracy")),
-                "top5_val_accuracy": r(logs.get("val_top_k_categorical_accuracy")),
-                "batch_size": self.batch_size,
-                "image_size": f"{self.image_size[0]}x{self.image_size[1]}",
+                "f1_train_macro": r(logs.get("f1_macro")),
+                "f1_val_macro": r(logs.get("val_f1_macro")),
+                "f1_train_weighted": r(logs.get("f1_weighted")),
+                "f1_val_weighted": r(logs.get("f1_val_weighted")),
+                "top5_train_accuracy": r(logs.get("top5_accuracy")),
+                "top5_val_accuracy": r(logs.get("val_top5_accuracy")),
                 "timestamp": timestamp
             }
 
             df = pd.DataFrame([results])
-
             if self.log_path.exists():
-                df.to_csv(self.log_path, mode='a', header=False, index=True)
+                df.to_csv(self.log_path, mode='a', header=False, index=False)
             else:
-                df.to_csv(self.log_path, mode='w', index=True, header=True)
+                df.to_csv(self.log_path, mode='w', header=True, index=False)
 
-    def run_experiment(self, epochs=10, callbacks=None, resume=True):
+    def run_experiment(self, epochs=10, callbacks=None):
         initial_epoch = 0
         checkpoint_path = None
 
-        if resume:
-            # Look for the latest checkpoint
+        if self.resume:
+            # Look for most recent checkpoint for this experiment
             pattern = f"../project/model_{self.experiment_name}_*.keras"
             checkpoint_files = sorted(glob.glob(pattern))
 
-            if checkpoint_files and os.path.exists(self.log_path):
+            if checkpoint_files:
+                # Sort by timestamp in filename and pick the latest
+                checkpoint_files = sorted(checkpoint_files, key=lambda x: x.split("_")[-1].replace(".keras", ""))
                 latest_checkpoint = checkpoint_files[-1]
+
                 try:
                     log_df = pd.read_csv(self.log_path)
                     if "epoch" in log_df.columns and not log_df.empty:
-                        initial_epoch = int(log_df["epoch"].max())
+                        initial_epoch = int(log_df[log_df["experiment_name"] == self.experiment_name]["epoch"].max())
                         print(f"Resuming training from epoch {initial_epoch}")
                         self.model = load_model(latest_checkpoint)
-                        checkpoint_path = latest_checkpoint  # Reuse existing path
+                        checkpoint_path = latest_checkpoint
                 except Exception as e:
                     print(f"Could not read log or load model: {e}")
                     print("Starting from scratch.")
@@ -427,7 +423,6 @@ class Experiment:
                 print("No checkpoint found, starting from scratch.")
 
         if not checkpoint_path:
-            # Either resume=False, or no previous checkpoint found — generate new
             self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             checkpoint_path = f"../project/model_{self.experiment_name}_{self.timestamp}.keras"
 
@@ -435,10 +430,10 @@ class Experiment:
         default_callbacks = [
             self.ExperimentLogger(
                 experiment_name=self.experiment_name,
-                batch_size=self.batch_size,
-                image_size=self.image_size,
+                experiment_id=self.experiment_id,
                 train_ds=self.train_ds,
-                val_ds=self.val_ds
+                val_ds=self.val_ds,
+                log_path=self.log_path
             ),
             EarlyStopping(patience=3, restore_best_weights=True),
             ModelCheckpoint(checkpoint_path, save_best_only=True)
