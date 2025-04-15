@@ -398,32 +398,36 @@ class Experiment:
             else:
                 df.to_csv(self.log_path, mode='w', index=True, header=True)
 
-    def run_experiment(self, epochs=10, callbacks=None):
-        # Find the most recent checkpoint for this experiment
-        pattern = f"../project/best_model_{self.experiment_name}_*.keras"
-        checkpoint_files = sorted(glob.glob(pattern))
-
+    def run_experiment(self, epochs=10, callbacks=None, resume=True):
         initial_epoch = 0
+        checkpoint_path = None
 
-        if checkpoint_files and os.path.exists(self.log_path):
-            latest_checkpoint = checkpoint_files[-1]  # last one (assuming sorted by name/timestamp)
-            try:
-                log_df = pd.read_csv(self.log_path)
-                if "epoch" in log_df.columns and not log_df.empty:
-                    initial_epoch = int(log_df["epoch"].max()) + 1
-                    print(f"Resuming training from epoch {initial_epoch}")
-                    self.model = load_model(latest_checkpoint)
-            except Exception as e:
-                print(f"Could not read log file or load model: {e}")
-                print("Starting from scratch.")
-        else:
-            print("No checkpoint found, starting from scratch.")
+        if resume:
+            # Look for the latest checkpoint
+            pattern = f"../project/model_{self.experiment_name}_*.keras"
+            checkpoint_files = sorted(glob.glob(pattern))
 
-        # Save to a new file (or overwrite last)
-        self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        new_checkpoint_path = f"project/best_model_{self.experiment_name}_{self.timestamp}.keras"
+            if checkpoint_files and os.path.exists(self.log_path):
+                latest_checkpoint = checkpoint_files[-1]
+                try:
+                    log_df = pd.read_csv(self.log_path)
+                    if "epoch" in log_df.columns and not log_df.empty:
+                        initial_epoch = int(log_df["epoch"].max())
+                        print(f"Resuming training from epoch {initial_epoch}")
+                        self.model = load_model(latest_checkpoint)
+                        checkpoint_path = latest_checkpoint  # Reuse existing path
+                except Exception as e:
+                    print(f"Could not read log or load model: {e}")
+                    print("Starting from scratch.")
+            else:
+                print("No checkpoint found, starting from scratch.")
 
-        # Define default callbacks
+        if not checkpoint_path:
+            # Either resume=False, or no previous checkpoint found — generate new
+            self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            checkpoint_path = f"../project/model_{self.experiment_name}_{self.timestamp}.keras"
+
+        # Callbacks
         default_callbacks = [
             self.ExperimentLogger(
                 experiment_name=self.experiment_name,
@@ -433,7 +437,7 @@ class Experiment:
                 val_ds=self.val_ds
             ),
             EarlyStopping(patience=3, restore_best_weights=True),
-            ModelCheckpoint(new_checkpoint_path, save_best_only=True)
+            ModelCheckpoint(checkpoint_path, save_best_only=True)
         ]
 
         if callbacks:
@@ -441,7 +445,7 @@ class Experiment:
         else:
             all_callbacks = default_callbacks
 
-        # Train
+        # Training
         history = self.model.fit(
             self.train_ds,
             validation_data=self.val_ds,
