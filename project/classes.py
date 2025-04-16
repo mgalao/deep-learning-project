@@ -76,6 +76,16 @@ class Preprocessor:
                 keras.layers.RandomContrast(0.4),
             ]),
 
+            "grayscale_plus": keras.Sequential([
+                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+                keras.layers.RandomContrast(0.4),
+                keras.layers.RandomSharpness(0.3),
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomRotation(0.1),
+                keras.layers.RandomZoom(0.1),
+            ]), 
+
             "randaugment": RandAugment(
                 value_range=(0, 255),
                 augmentations_per_image=2,
@@ -89,14 +99,6 @@ class Preprocessor:
                 # =0.2 is a default parameter, usually mixed images more similar to the one of the originals
                 # Encorages generalization, reduces overfitting 
                 alpha=0.2,
-                seed=seed
-            ),
-
-            "cutmix": CutMix(
-                # Cuts a part of one image and past it in another, and mixes the labels
-                # Alpha is the parameter of the bata distribution that samples lambda, 
-                # that defines the proportion of the image that is cut
-                alpha=1.0,
                 seed=seed
             ),
         }
@@ -643,7 +645,7 @@ class Experiment:
                 val_ds=self.val_ds,
                 log_path=self.log_path
             ),
-            EarlyStopping(patience=3, restore_best_weights=True),
+            # EarlyStopping(patience=3, restore_best_weights=True),
             ModelCheckpoint(checkpoint_path, save_best_only=True)
         ]
 
