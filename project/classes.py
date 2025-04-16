@@ -101,7 +101,8 @@ class Preprocessor:
             ),
         }
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False):
+
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, phylum_map=None):
         
         """
         Parameters:
@@ -327,6 +328,213 @@ class Preprocessor:
     
     # defining funtion for the grey scale layer
     def random_grayscale_layer(self, factor=1.0):
+        return keras.layers.RandomGrayscale(factor=factor)
+    
+
+class Preprocessor_with_phylum:
+    def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
+        # Basic configuration
+        self.image_size = image_size
+        self.seed = seed
+        self.batch_size = batch_size
+
+        # Dictionary of supported augmentation strategies
+        self.augmentations = {
+            "none": keras.layers.Lambda(lambda x: x),  # No augmentation
+            "light": keras.Sequential([
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomRotation(0.05),
+                keras.layers.RandomZoom(0.05),
+                keras.layers.RandomContrast(0.1),
+                RandomColorJitter(
+                    value_range=(0, 1), brightness_factor=0.05,
+                    contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
+                ),
+                keras.layers.RandomSharpness(factor=0.2),
+            ]),
+            "medium": keras.Sequential([
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomRotation(0.1),
+                keras.layers.RandomZoom(0.1),
+                keras.layers.RandomTranslation(0.05, 0.05),
+                RandomColorJitter(
+                    value_range=(0, 1), brightness_factor=0.1,
+                    contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
+                ),
+                keras.layers.RandomSharpness(factor=0.3),
+            ]),
+            "heavy": keras.Sequential([
+                keras.layers.RandomFlip("horizontal_and_vertical"),
+                keras.layers.RandomRotation(0.15),
+                keras.layers.RandomZoom(0.2),
+                keras.layers.RandomTranslation(0.1, 0.1),
+                RandomColorJitter(
+                    value_range=(0, 1), brightness_factor=0.2,
+                    contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
+                ),
+                keras.layers.RandomSharpness(factor=0.4),
+            ]),
+            "grayscale": keras.Sequential([
+                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),
+                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),
+                keras.layers.RandomContrast(0.4),
+            ]),
+            "randaugment": RandAugment(
+                value_range=(0, 255),
+                augmentations_per_image=2,
+                magnitude=0.5,
+                seed=seed
+            ),
+            "mixup": MixUp(alpha=0.2, seed=seed),
+            "cutmix": CutMix(alpha=1.0, seed=seed),
+        }
+
+    def load_img(self, df, minority_class, family_encoder, shuffle=False, augment=None, cache=True, preprocessing_function=None, oversampling=False):
+        # Adjust batch size when oversampling is enabled
+        if oversampling:
+            batch_size = round(self.batch_size * 0.75)
+        else:
+            batch_size = self.batch_size
+
+        # Extract file paths and family labels from DataFrame
+        file_paths = df['full_file_path'].values
+        family_onehot = np.stack(df["family_onehot"].values)
+        dataset = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
+
+        # Optionally shuffle the dataset
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed)
+
+        # Define a function to load and resize images from file paths
+        def _load_image(file_path, label):
+            image = tf.io.read_file(file_path)
+            image = tf.image.decode_jpeg(image, channels=3)
+            image = tf.image.resize(image, self.image_size)
+            return image, label
+
+        # Apply image loading logic
+        dataset = dataset.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+        # Add phylum labels as a second input stream
+        phylum_onehot = np.stack(df["phylum_onehot"].values)
+        phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
+
+        # Combine family and phylum into a single dataset
+        dataset = tf.data.Dataset.zip((dataset, phylum_ds))
+        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+        # Format the dataset into input dicts for model: {"image_input", "phylum_input"} → label
+        dataset = dataset.map(lambda x, phylum: ({"image_input": x[0], "phylum_input": phylum}, x[1]), num_parallel_calls=tf.data.AUTOTUNE)
+
+        # Save class names for later reference
+        class_names = family_encoder.classes_.tolist()
+        self.class_names = class_names
+
+        # Default normalization (if no preprocessing function is given)
+        normalization_layer = tf.keras.layers.Rescaling(1./255)
+
+        # Optional oversampling logic to balance minority classes in each batch
+        if oversampling:
+            # Identify minority class indices
+            minority_indices = [self.class_names.index(name) for name in minority_class]
+
+            # Custom function to add more minority samples per batch
+            def oversample_minority_fixed_size(inputs, label_batch):
+                image_batch = inputs["image_input"]
+                phylum_batch = inputs["phylum_input"]
+
+                target_size = round(self.batch_size / 0.75)
+
+                # Identify which examples in the batch are minority
+                class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+                minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
+                is_minority = tf.reduce_any(tf.equal(tf.expand_dims(class_indices, -1), minority_indices_tf), axis=-1)
+
+                # Extract only minority samples
+                minority_images = tf.boolean_mask(image_batch, is_minority)
+                minority_phyla = tf.boolean_mask(phylum_batch, is_minority)
+                minority_labels = tf.boolean_mask(label_batch, is_minority)
+
+                # Concatenate original batch with oversampled minority samples
+                image_batch_aug = tf.concat([image_batch, minority_images], axis=0)
+                phylum_batch_aug = tf.concat([phylum_batch, minority_phyla], axis=0)
+                label_batch_aug = tf.concat([label_batch, minority_labels], axis=0)
+
+                # Shuffle new combined batch
+                indices = tf.range(tf.shape(image_batch_aug)[0])
+                shuffled_indices = tf.random.shuffle(indices)
+                image_batch_aug = tf.gather(image_batch_aug, shuffled_indices)
+                phylum_batch_aug = tf.gather(phylum_batch_aug, shuffled_indices)
+                label_batch_aug = tf.gather(label_batch_aug, shuffled_indices)
+
+                # Truncate or pad the batch to maintain consistent batch size
+                current_size = tf.shape(image_batch_aug)[0]
+
+                def truncate():
+                    return {"image_input": image_batch_aug[:target_size], "phylum_input": phylum_batch_aug[:target_size]}, label_batch_aug[:target_size]
+
+                def pad():
+                    needed = target_size - current_size
+                    rand_idx = tf.random.uniform([needed], 0, current_size, dtype=tf.int32)
+                    return {
+                        "image_input": tf.concat([image_batch_aug, tf.gather(image_batch_aug, rand_idx)], axis=0),
+                        "phylum_input": tf.concat([phylum_batch_aug, tf.gather(phylum_batch_aug, rand_idx)], axis=0),
+                    }, tf.concat([label_batch_aug, tf.gather(label_batch_aug, rand_idx)], axis=0)
+
+                return tf.cond(current_size > target_size, truncate, pad)
+
+            # Apply oversampling map
+            dataset = dataset.map(oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
+
+        # Optional external preprocessing function
+        if preprocessing_function is not None:
+            dataset = dataset.map(lambda x, y: (
+                {"image_input": preprocessing_function(x["image_input"]), "phylum_input": x["phylum_input"]},
+                y
+            ))
+
+        # Apply augmentations
+        if augment:
+            if augment not in self.augmentations:
+                raise ValueError(f"Unknown augmentation strategy: {augment}")
+
+            aug_layer = self.augmentations[augment]
+
+            # Handle mixup/cutmix (needs special treatment)
+            if isinstance(aug_layer, (MixUp, CutMix)):
+                def apply_mixup_with_phylum(x, y):
+                    mix_result = aug_layer({"images": x["image_input"], "labels": y})
+                    return {
+                        "image_input": mix_result["images"],
+                        "phylum_input": x["phylum_input"]  # phylum stays the same
+                    }, mix_result["labels"]
+
+                dataset = dataset.map(apply_mixup_with_phylum, num_parallel_calls=tf.data.AUTOTUNE)
+            else:
+                # Apply standard augmentations to image_input only
+                def apply_aug(x, y):
+                    return {
+                        "image_input": aug_layer(x["image_input"]),
+                        "phylum_input": x["phylum_input"]
+                    }, y
+
+                dataset = dataset.map(apply_aug, num_parallel_calls=tf.data.AUTOTUNE)
+        else:
+            # If no augment and no preprocessing, apply basic normalization
+            if preprocessing_function is None:
+                dataset = dataset.map(lambda x, y: (
+                    {"image_input": normalization_layer(x["image_input"]), "phylum_input": x["phylum_input"]}, y
+                ))
+
+        # Optionally cache the dataset in memory and prefetch for speed
+        if cache:
+            dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
+
+        # Return dataset and class names
+        return dataset, class_names
+
+    def random_grayscale_layer(self, factor=1.0):
+        # Optional helper function for grayscale augmentation
         return keras.layers.RandomGrayscale(factor=factor)
 
 
