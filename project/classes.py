@@ -102,7 +102,7 @@ class Preprocessor:
         }
 
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, phylum_map=None):
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, shuffle=False):
         
         """
         Parameters:
@@ -127,7 +127,7 @@ class Preprocessor:
             image_size=self.image_size,
             label_mode=label_mode,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=shuffle,
             interpolation="bilinear"  # interpolation method defines how pixel values are estimated during this resizing. "bilinear" is smooth and fast, balances quality and speed
         )
 
@@ -519,7 +519,7 @@ class Preprocessor_with_phylum:
                     }, y
 
                 dataset = dataset.map(apply_aug, num_parallel_calls=tf.data.AUTOTUNE)
-        else:
+        else:   
             # If no augment and no preprocessing, apply basic normalization
             if preprocessing_function is None:
                 dataset = dataset.map(lambda x, y: (
