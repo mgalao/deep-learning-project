@@ -541,7 +541,7 @@ class Preprocessor_with_phylum:
 
 
 class Experiment:
-    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True):
+    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True, save_model=True):
         self.model = model
         self.train_ds = train_ds
         self.val_ds = val_ds
@@ -550,6 +550,7 @@ class Experiment:
         self.image_size = image_size
         self.log_path = Path(log_path)
         self.resume = resume
+        self.save_model = save_model
 
         # Generate a timestamp
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -644,10 +645,13 @@ class Experiment:
                 train_ds=self.train_ds,
                 val_ds=self.val_ds,
                 log_path=self.log_path
-            ),
-            # EarlyStopping(patience=3, restore_best_weights=True),
-            ModelCheckpoint(checkpoint_path, save_best_only=True)
+            )
         ]
+
+        if self.save_model:
+            default_callbacks.append(
+                ModelCheckpoint(checkpoint_path, save_best_only=True)
+            )
 
         if callbacks:
             all_callbacks = default_callbacks + callbacks
