@@ -101,8 +101,21 @@ class Preprocessor:
                 alpha=0.2,
                 seed=seed
             ),
-        }
 
+            "geometric_transformations": keras.Sequential([
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomFlip("vertical"),
+                keras.layers.RandomRotation(0.1),
+                keras.layers.RandomZoom(0.1),
+                keras.layers.RandomTranslation(0.1, 0.1),
+            ]), 
+
+            "color_lightening": keras.Sequential([
+                keras.layers.RandomBrightness(factor=0.2), # Requires custom layer or tf.image
+                keras.layers.RandomContrast(0.3),
+                keras.layers.RandomSaturation(0.3),         # Requires tf.image
+                keras.layers.RandomHue(0.05),
+            ])}
 
     def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, shuffle=False):
         
@@ -183,7 +196,7 @@ class Preprocessor:
 
             def oversample_minority_fixed_size(image_batch, label_batch):
                 # Target batch size
-                target_size = round(self.batch_size / 0.75)
+                target_size = self.batch_size
 
                 # Get class indices from one-hot encoded labels
                 class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
@@ -193,6 +206,7 @@ class Preprocessor:
                 is_minority = tf.reduce_any(
                     tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
                 )
+
 
                 # Select minority samples
                 minority_images = tf.boolean_mask(image_batch, is_minority)
