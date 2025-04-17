@@ -17,6 +17,42 @@ from tensorflow.keras.applications import ResNet50
 from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
 
+import os
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+import keras
+from pathlib import Path
+from datetime import datetime
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.utils import image_dataset_from_directory
+from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
+from tensorflow.keras.models import load_model
+import glob
+from keras.callbacks import Callback, ModelCheckpoint
+
+class ColorJitter(keras.layers.Layer):
+    def __init__(self, brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, seed=None):
+        super().__init__()
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+        self.seed = seed
+
+    def jitter_fn(self, image):
+        image = tf.image.random_brightness(image, max_delta=self.brightness)
+        image = tf.image.random_contrast(image, lower=1 - self.contrast, upper=1 + self.contrast)
+        image = tf.image.random_saturation(image, lower=1 - self.saturation, upper=1 + self.saturation)
+        image = tf.image.random_hue(image, max_delta=self.hue)
+        return image
+
+    def call(self, x, training=True):
+        if training:
+            x = tf.map_fn(self.jitter_fn, x)
+        return x
+
+
 class Preprocessor:
     def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
 
@@ -36,9 +72,7 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.05),
                 keras.layers.RandomZoom(0.05),
                 keras.layers.RandomContrast(0.1),
-                RandomColorJitter(  # Combines brightness, contrast, saturation, hue
-                    value_range=(0, 1), brightness_factor=0.05, contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
-                ),
+                ColorJitter(brightness=0.05, contrast=0.05, saturation=0.05, hue=0.01),
                 keras.layers.RandomSharpness(factor=0.2),
             ]),
 
@@ -47,9 +81,7 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.1),
                 keras.layers.RandomZoom(0.1),
                 keras.layers.RandomTranslation(0.05, 0.05),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.1, contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
-                ),
+                ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02),
                 keras.layers.RandomSharpness(factor=0.3),
             ]),
 
@@ -58,17 +90,9 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.15),
                 keras.layers.RandomZoom(0.2),
                 keras.layers.RandomTranslation(0.1, 0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.2, contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
-                ),
+                ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.05),
                 keras.layers.RandomSharpness(factor=0.4),
             ]),
-
-            # "grayscale": keras.Sequential([
-            #     # Acho que aqui podíamos adicionar outro tipo de augmentations com uma dada probabilidade
-            #     keras.layers.RandomGrayscale(factor=1.0),
-            #     keras.layers.RandomContrast(0.4),
-            # ]),
 
             "grayscale": keras.Sequential([
                 keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
@@ -111,10 +135,7 @@ class Preprocessor:
             ]), 
 
             "color_lightening": keras.Sequential([
-                keras.layers.RandomBrightness(factor=0.2), # Requires custom layer or tf.image
-                keras.layers.RandomContrast(0.3),
-                keras.layers.RandomSaturation(0.3),         # Requires tf.image
-                keras.layers.RandomHue(0.05),
+                ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
             ])}
 
     def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, shuffle=False):
@@ -258,7 +279,7 @@ class Preprocessor:
             # If we are applying augmentation methods that change color, we should do normalization
             # after applying the augmentation methods
 
-            if augment in ["grayscale", "randaugment"]:
+            if augment in ["grayscale", "randaugment", "color_lightening"]:
                 aug_layer = self.augmentations[augment]
                 # apply with probability
                 if augment_prob < 1.0:
@@ -340,11 +361,8 @@ class Preprocessor:
             dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
 
         return dataset, class_names
-
     
-    # defining funtion for the grey scale layer
-    def random_grayscale_layer(self, factor=1.0):
-        return keras.layers.RandomGrayscale(factor=factor)
+
     
 
 class Preprocessor_with_phylum:
@@ -356,54 +374,78 @@ class Preprocessor_with_phylum:
 
         # Dictionary of supported augmentation strategies
         self.augmentations = {
-            "none": keras.layers.Lambda(lambda x: x),  # No augmentation
-            "light": keras.Sequential([
-                keras.layers.RandomFlip("horizontal"),
-                keras.layers.RandomRotation(0.05),
-                keras.layers.RandomZoom(0.05),
-                keras.layers.RandomContrast(0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.05,
-                    contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
-                ),
-                keras.layers.RandomSharpness(factor=0.2),
-            ]),
-            "medium": keras.Sequential([
-                keras.layers.RandomFlip("horizontal"),
-                keras.layers.RandomRotation(0.1),
-                keras.layers.RandomZoom(0.1),
-                keras.layers.RandomTranslation(0.05, 0.05),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.1,
-                    contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
-                ),
-                keras.layers.RandomSharpness(factor=0.3),
-            ]),
-            "heavy": keras.Sequential([
-                keras.layers.RandomFlip("horizontal_and_vertical"),
-                keras.layers.RandomRotation(0.15),
-                keras.layers.RandomZoom(0.2),
-                keras.layers.RandomTranslation(0.1, 0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.2,
-                    contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
-                ),
-                keras.layers.RandomSharpness(factor=0.4),
-            ]),
-            "grayscale": keras.Sequential([
-                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),
-                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),
-                keras.layers.RandomContrast(0.4),
-            ]),
-            "randaugment": RandAugment(
-                value_range=(0, 255),
-                augmentations_per_image=2,
-                magnitude=0.5,
-                seed=seed
-            ),
-            "mixup": MixUp(alpha=0.2, seed=seed),
-            "cutmix": CutMix(alpha=1.0, seed=seed),
-        }
+        "none": keras.layers.Lambda(lambda x: x),  # No augmentation
+
+        "light": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.05),
+            keras.layers.RandomZoom(0.05),
+            keras.layers.RandomContrast(0.1),
+            ColorJitter(brightness=0.05, contrast=0.05, saturation=0.05, hue=0.01),
+            keras.layers.RandomSharpness(factor=0.2),
+        ]),
+
+        "medium": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+            keras.layers.RandomTranslation(0.05, 0.05),
+            ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02),
+            keras.layers.RandomSharpness(factor=0.3),
+        ]),
+
+        "heavy": keras.Sequential([
+            keras.layers.RandomFlip("horizontal_and_vertical"),
+            keras.layers.RandomRotation(0.15),
+            keras.layers.RandomZoom(0.2),
+            keras.layers.RandomTranslation(0.1, 0.1),
+            ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.05),
+            keras.layers.RandomSharpness(factor=0.4),
+        ]),
+
+        "grayscale": keras.Sequential([
+            keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+            keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+            keras.layers.RandomContrast(0.4),
+        ]),
+
+        "grayscale_plus": keras.Sequential([
+            keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+            keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+            keras.layers.RandomContrast(0.4),
+            keras.layers.RandomSharpness(0.3),
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+        ]), 
+
+        "randaugment": RandAugment(
+            value_range=(0, 255),
+            augmentations_per_image=2,
+            magnitude=0.5,
+            seed=seed
+        ),
+
+        "mixup": MixUp(
+            # Mixes 2 images - alpha controls the parameter of the beta dsitribution 
+            # where the coefficient for the linear combination is sampled
+            # =0.2 is a default parameter, usually mixed images more similar to the one of the originals
+            # Encorages generalization, reduces overfitting 
+            alpha=0.2,
+            seed=seed
+        ),
+
+        "geometric_transformations": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomFlip("vertical"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+            keras.layers.RandomTranslation(0.1, 0.1),
+        ]), 
+
+        "color_lightening": keras.Sequential([
+            ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
+        ])}
 
     def load_img(self, df, minority_class, family_encoder, shuffle=False, augment=None, cache=True, preprocessing_function=None, oversampling=False):
         # Adjust batch size when oversampling is enabled
