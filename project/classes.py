@@ -415,11 +415,11 @@ class Preprocessor_with_phylum:
         # Extract file paths and family labels from DataFrame
         file_paths = df['full_file_path'].values
         family_onehot = np.stack(df["family_onehot"].values)
-        dataset = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
+        phylum_onehot = np.stack(df["phylum_onehot"].values)
 
-        # Optionally shuffle the dataset
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed)
+        # Create datasets
+        image_label_ds = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
+        phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
 
         # Define a function to load and resize images from file paths
         def _load_image(file_path, label):
@@ -429,25 +429,33 @@ class Preprocessor_with_phylum:
             return image, label
 
         # Apply image loading logic
-        dataset = dataset.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
+        image_label_ds = image_label_ds.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
 
-        # Add phylum labels as a second input stream
-        phylum_onehot = np.stack(df["phylum_onehot"].values)
-        phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
+        # Zip inputs together: ((image, family), phylum)
+        dataset = tf.data.Dataset.zip((image_label_ds, phylum_ds))
 
-        # Combine family and phylum into a single dataset
-        dataset = tf.data.Dataset.zip((dataset, phylum_ds))
+        # Format the dataset into model input format: {"image_input", "phylum_input"} → label
+        dataset = dataset.map(
+            lambda x, phylum: ({"image_input": x[0], "phylum_input": phylum}, x[1]),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
+
+        # ✅ Shuffle here (after pairing everything), so everything stays in sync
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed, reshuffle_each_iteration=True)
+
+        # Continue with batching and prefetching
         dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-        # Format the dataset into input dicts for model: {"image_input", "phylum_input"} → label
-        dataset = dataset.map(lambda x, phylum: ({"image_input": x[0], "phylum_input": phylum}, x[1]), num_parallel_calls=tf.data.AUTOTUNE)
 
         # Save class names for later reference
         class_names = family_encoder.classes_.tolist()
         self.class_names = class_names
 
-        # Default normalization (if no preprocessing function is given)
+        # Normalization
         normalization_layer = tf.keras.layers.Rescaling(1./255)
+
+        # The rest of your code (oversampling, augmentations, etc.) goes below...
+        # (You don’t need to change those parts)
 
         # Optional oversampling logic to balance minority classes in each batch
         if oversampling:
@@ -459,7 +467,7 @@ class Preprocessor_with_phylum:
                 image_batch = inputs["image_input"]
                 phylum_batch = inputs["phylum_input"]
 
-                target_size = round(self.batch_size / 0.75)
+                target_size = self.batch_size
 
                 # Identify which examples in the batch are minority
                 class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
