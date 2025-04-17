@@ -5,25 +5,6 @@ import tensorflow as tf
 import keras
 from pathlib import Path
 from datetime import datetime
-from sklearn.metrics import f1_score
-from sklearn.preprocessing import LabelEncoder
-from tensorflow.keras.utils import image_dataset_from_directory
-from keras.layers import RandomGrayscale
-from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
-from tensorflow.keras.models import load_model
-import glob
-from tensorflow.keras import layers, models, optimizers
-from tensorflow.keras.applications import ResNet50
-from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
-
-
-import os
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-import keras
-from pathlib import Path
-from datetime import datetime
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
 from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
@@ -138,20 +119,8 @@ class Preprocessor:
                 ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
             ])}
 
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, shuffle=False):
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, oversampling=False, shuffle=False):
         
-        """
-        Parameters:
-        - data_dir: path to image folder
-        - minority_class: labels of the classes considered minority
-        - label_mode: "categorical" = one-hot encoding
-        - augment: name of the augmentation strategy to apply
-        - cache: whether to use caching and prefetching for performance
-        - preprocessing_function: if we are doing preprocessing for a pretrained model, we want to pass in this function 
-        the preprocessing pipeline that is suitable for this model
-        - augment_prob: float in [0,1] that controls probability of applying augmentation
-        - oversampling: if we want to do oversampling
-        """
         if oversampling==True:
             batch_size = round(self.batch_size * 0.75)
         else:
@@ -179,42 +148,6 @@ class Preprocessor:
             # minority_indices = [class_names.index(fam) for fam in minority_class]
             minority_indices = [self.class_names.index(name) for name in minority_class]
 
-            # for images, labels in dataset:
-            #    for i in range(len(labels)):
-            #        label = tf.argmax(labels[i]).numpy()
-            #        if label in minority_indices:
-            #            print("aaa")
-
-            # Function to oversample minority class samples
-            # def oversample_minority(image_batch, label_batch):
-
-            #     # Get class indices from one-hot encoded labels
-            #     class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
-            #     minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
-
-            #     # Boolean mask for minority class samples
-            #     is_minority = tf.reduce_any(
-            #         tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
-            #     )
-
-            #     # Select minority samples
-            #     minority_images = tf.boolean_mask(image_batch, is_minority)
-            #     minority_labels = tf.boolean_mask(label_batch, is_minority)
-
-            #     # Duplicate them (once, can duplicate more if needed)   
-            #     image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
-            #     label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
-
-            #     # Shuffle the augmented batch
-            #     indices = tf.range(tf.shape(image_batch_augmented)[0])
-            #     shuffled_indices = tf.random.shuffle(indices)
-            #     image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
-            #     label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
-
-
-            #     return image_batch_augmented, label_batch_augmented
-
-
             def oversample_minority_fixed_size(image_batch, label_batch):
                 # Target batch size
                 target_size = self.batch_size
@@ -227,7 +160,6 @@ class Preprocessor:
                 is_minority = tf.reduce_any(
                     tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
                 )
-
 
                 # Select minority samples
                 minority_images = tf.boolean_mask(image_batch, is_minority)
@@ -279,21 +211,9 @@ class Preprocessor:
             # If we are applying augmentation methods that change color, we should do normalization
             # after applying the augmentation methods
 
-            if augment in ["grayscale", "randaugment", "color_lightening"]:
+            if augment in ["grayscale", "randaugment"]:
                 aug_layer = self.augmentations[augment]
                 # apply with probability
-                if augment_prob < 1.0:
-                    def augmentation_with_probability(aug_layer):
-                        def apply(x):
-                            return tf.cond(
-                            tf.random.uniform([]) < augment_prob,
-                            lambda: aug_layer(x),
-                            lambda: x)
-                        return keras.layers.Lambda(apply)
-                    aug_layer = augmentation_with_probability(aug_layer)
-
-
-                # applying the augmentation layer
                 dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
                 if preprocessing_function is None:
                     dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
@@ -307,50 +227,20 @@ class Preprocessor:
                 if augment not in self.augmentations:
                     raise ValueError(f"Unknown augmentation strategy: {augment}")
                 
+
                 aug_layer = self.augmentations[augment]
 
-                # Handle MixUp and CutMix separately — they expect dict input and output 
-                # and are the mixes between 2 images
-                if isinstance(aug_layer, (MixUp, CutMix)):
+                # Handle MixUp separately — they expect dict input and output 
+                # and is the mix between 2 images
+                if isinstance(aug_layer, (MixUp)):
                     # Apply with probability
-                    if augment_prob < 1.0:
-                        def apply_mix(x, y):
-                            def apply_aug():
-                                result = aug_layer({"images": x, "labels": y})
-                                return result["images"], result["labels"]
-                            
-                            def skip_aug():
-                                return x, y
+                    def apply_mix(x, y):
+                        result = aug_layer({"images": x, "labels": y})
+                        return result["images"], result["labels"]
 
-                            return tf.cond(
-                                tf.random.uniform([]) < augment_prob,
-                                true_fn=apply_aug,
-                                false_fn=skip_aug
-                            )
-                    else:
-                        def apply_mix(x, y):
-                            result = aug_layer({"images": x, "labels": y})
-                            return result["images"], result["labels"]
-
-                    # applying the augmentation layer
                     dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
                 
-                # the other augmentations
                 else:
-                    # Apply with probability
-                    if augment_prob < 1.0:
-
-                        def augmentation_with_probability(aug_layer):
-                            def apply(x):
-                                return tf.cond(
-                                tf.random.uniform([]) < augment_prob,
-                                lambda: aug_layer(x),
-                                lambda: x)
-                            return keras.layers.Lambda(apply)
-
-                        aug_layer = augmentation_with_probability(aug_layer)
-                    
-                    # applying the augmentation layer
                     dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
         else:
             if preprocessing_function is None:
