@@ -41,6 +41,7 @@ class Preprocessor:
         self.image_size = image_size
         self.seed = seed
         self.batch_size = batch_size
+        self.minority_indices = None 
 
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
@@ -118,6 +119,132 @@ class Preprocessor:
             "color_lightening": keras.Sequential([
                 ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
             ])}
+        
+    # def _oversample_minority_fixed_size(self, image_batch, label_batch):
+    #     target_size = self.batch_size
+
+    #     # Get class indices from one-hot encoded labels
+    #     class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+    #     minority_indices_tf = tf.constant(self.minority_indices, dtype=tf.int32)
+
+    #     # Boolean mask for minority class samples
+    #     is_minority = tf.reduce_any(
+    #         tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
+    #     )
+
+    #     # Select minority samples
+    #     minority_images = tf.boolean_mask(image_batch, is_minority)
+    #     minority_labels = tf.boolean_mask(label_batch, is_minority)
+
+    #     # Augment batch
+    #     image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+    #     label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+    #     # Shuffle
+    #     indices = tf.range(tf.shape(image_batch_augmented)[0])
+    #     shuffled_indices = tf.random.shuffle(indices)
+    #     image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
+    #     label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
+
+    #     current_size = tf.shape(image_batch_augmented)[0]
+
+    #     def truncate():
+    #         return image_batch_augmented[:target_size], label_batch_augmented[:target_size]
+
+    #     def pad():
+    #         needed = target_size - current_size
+    #         rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
+    #         extra_images = tf.gather(image_batch_augmented, rand_indices)
+    #         extra_labels = tf.gather(label_batch_augmented, rand_indices)
+    #         return tf.concat([image_batch_augmented, extra_images], axis=0), tf.concat([label_batch_augmented, extra_labels], axis=0)
+
+    #     image_batch_final, label_batch_final = tf.cond(
+    #         current_size > target_size,
+    #         true_fn=truncate,
+    #         false_fn=pad
+    #     )
+
+    #     return image_batch_final, label_batch_final
+
+    def _oversample_minority_fixed_size(self, image_batch, label_batch):
+        target_size = self.batch_size
+
+        # 1. Identificar os índices das classes
+        class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+        minority_indices_tf = tf.constant(self.minority_indices, dtype=tf.int32)
+
+        # 2. Criar máscara para identificar exemplos da minoria
+        is_minority = tf.reduce_any(
+            tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf),
+            axis=-1
+        )
+
+        # 3. Separar imagens e labels minoritários e maioritários
+        minority_images = tf.boolean_mask(image_batch, is_minority)
+        minority_labels = tf.boolean_mask(label_batch, is_minority)
+        majority_images = tf.boolean_mask(image_batch, tf.logical_not(is_minority))
+        majority_labels = tf.boolean_mask(label_batch, tf.logical_not(is_minority))
+
+        # 4. Concatenar o batch original com os exemplos minoritários (oversample)
+        image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+        label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+        # 5. Shuffle do batch aumentado
+        indices = tf.range(tf.shape(image_batch_augmented)[0])
+        shuffled_indices = tf.random.shuffle(indices)
+        image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
+        label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
+
+        current_size = tf.shape(image_batch_augmented)[0]
+
+        # 6. Definir o que fazer se o batch estiver demasiado grande ou pequeno
+        def truncate():
+            # Reembaralhar para garantir diversidade
+            idx = tf.range(current_size)
+            idx = tf.random.shuffle(idx)
+            idx = idx[:target_size]
+            return tf.gather(image_batch_augmented, idx), tf.gather(label_batch_augmented, idx)
+
+        def pad():
+            needed = target_size - current_size
+
+            maj_size = tf.shape(majority_images)[0]
+
+            # ⚠️ Proteção contra divisão por zero (caso extremo)
+            def pad_with_majority():
+                rand_indices = tf.random.uniform([needed], minval=0, maxval=maj_size, dtype=tf.int32)
+                extra_images = tf.gather(majority_images, rand_indices)
+                extra_labels = tf.gather(majority_labels, rand_indices)
+                return (
+                    tf.concat([image_batch_augmented, extra_images], axis=0),
+                    tf.concat([label_batch_augmented, extra_labels], axis=0)
+                )
+
+            def pad_with_original():
+                rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
+                extra_images = tf.gather(image_batch_augmented, rand_indices)
+                extra_labels = tf.gather(label_batch_augmented, rand_indices)
+                return (
+                    tf.concat([image_batch_augmented, extra_images], axis=0),
+                    tf.concat([label_batch_augmented, extra_labels], axis=0)
+                )
+
+            # Se tivermos maioritários disponíveis, usamos isso. Caso contrário, reciclamos o batch atual.
+            return tf.cond(
+                maj_size > 0,
+                true_fn=pad_with_majority,
+                false_fn=pad_with_original
+            )
+
+        image_batch_final, label_batch_final = tf.cond(
+            current_size > target_size,
+            true_fn=truncate,
+            false_fn=pad
+        )
+
+        return image_batch_final, label_batch_final
+
+
 
     def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, oversampling=False, shuffle=False):
         
@@ -143,107 +270,36 @@ class Preprocessor:
         # initializing the normalization layer
         normalization_layer = tf.keras.layers.Rescaling(1./255)
 
-        # if we wanto to do oversampling of the minority classes:
+        # if we want to do oversampling of the minority classes:
         if oversampling:
-            # minority_indices = [class_names.index(fam) for fam in minority_class]
-            minority_indices = [self.class_names.index(name) for name in minority_class]
-
-            def oversample_minority_fixed_size(image_batch, label_batch):
-                # Target batch size
-                target_size = self.batch_size
-
-                # Get class indices from one-hot encoded labels
-                class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
-                minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
-
-                # Boolean mask for minority class samples
-                is_minority = tf.reduce_any(
-                    tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
-                )
-
-                # Select minority samples
-                minority_images = tf.boolean_mask(image_batch, is_minority)
-                minority_labels = tf.boolean_mask(label_batch, is_minority)
-
-                # Augment: add minority samples to original batch
-                image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
-                label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
-
-                # Shuffle
-                indices = tf.range(tf.shape(image_batch_augmented)[0])
-                shuffled_indices = tf.random.shuffle(indices)
-                image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
-                label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
-
-                current_size = tf.shape(image_batch_augmented)[0]
-
-                # If too large → truncate
-                def truncate():
-                    return image_batch_augmented[:target_size], label_batch_augmented[:target_size]
-
-                # If too small → resample to reach size
-                def pad():
-                    needed = target_size - current_size
-                    rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
-                    extra_images = tf.gather(image_batch_augmented, rand_indices)
-                    extra_labels = tf.gather(label_batch_augmented, rand_indices)
-                    return tf.concat([image_batch_augmented, extra_images], axis=0), tf.concat([label_batch_augmented, extra_labels], axis=0)
-
-                # Choose truncate or pad based on current size
-                image_batch_final, label_batch_final = tf.cond(
-                    current_size > target_size,
-                    true_fn=truncate,
-                    false_fn=pad
-                )
-
-                return image_batch_final, label_batch_final
-
-
-            # Apply the oversampling logic to the dataset
-            dataset = dataset.map(oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
-        
+            self.minority_indices = [self.class_names.index(name) for name in minority_class]
+            dataset = dataset.map(self._oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
 
         if preprocessing_function is not None:
             dataset = dataset.map(lambda x, y: (preprocessing_function(x), y))
 
+
+        # Primeiro: normalização se necessário
+        if preprocessing_function is None and augment not in ["grayscale", "randaugment"]:
+            dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+
+        # Segundo: aplicar augmentations
         if augment:
+            aug_layer = self.augmentations.get(augment)
 
-            # If we are applying augmentation methods that change color, we should do normalization
-            # after applying the augmentation methods
+            if aug_layer is None:
+                raise ValueError(f"Unknown augmentation strategy: {augment}")
 
-            if augment in ["grayscale", "randaugment"]:
-                aug_layer = self.augmentations[augment]
-                # apply with probability
-                dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
-                if preprocessing_function is None:
-                    dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
-            
-            # if the augmentation methods do not change the color of the images, 
-            # than we do normalization before applying augmentation 
+            if augment == "mixup":
+                def apply_mix(x, y):
+                    result = aug_layer({"images": x, "labels": y})
+                    return result["images"], result["labels"]
+                dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
             else:
-                if preprocessing_function is None:
-                    dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+                dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
 
-                if augment not in self.augmentations:
-                    raise ValueError(f"Unknown augmentation strategy: {augment}")
-                
-
-                aug_layer = self.augmentations[augment]
-
-                # Handle MixUp separately — they expect dict input and output 
-                # and is the mix between 2 images
-                if isinstance(aug_layer, (MixUp)):
-                    # Apply with probability
-                    def apply_mix(x, y):
-                        result = aug_layer({"images": x, "labels": y})
-                        return result["images"], result["labels"]
-
-                    dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
-                
-                else:
-                    dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
-        else:
-            if preprocessing_function is None:
+            # Se a cor foi alterada, normalizar agora
+            if preprocessing_function is None and augment in ["grayscale", "randaugment"]:
                 dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
 
         # Enable caching and prefetching for performance
