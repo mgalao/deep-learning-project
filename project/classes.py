@@ -5,16 +5,33 @@ import tensorflow as tf
 import keras
 from pathlib import Path
 from datetime import datetime
-from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import image_dataset_from_directory
-from keras.layers import RandomGrayscale
 from keras_cv.layers import RandAugment, MixUp, CutMix, RandomColorJitter
 from tensorflow.keras.models import load_model
 import glob
-from tensorflow.keras import layers, models, optimizers
-from tensorflow.keras.applications import ResNet50
-from keras.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from keras.callbacks import Callback, ModelCheckpoint
+
+class ColorJitter(keras.layers.Layer):
+    def __init__(self, brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, seed=None):
+        super().__init__()
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+        self.seed = seed
+
+    def jitter_fn(self, image):
+        image = tf.image.random_brightness(image, max_delta=self.brightness)
+        image = tf.image.random_contrast(image, lower=1 - self.contrast, upper=1 + self.contrast)
+        image = tf.image.random_saturation(image, lower=1 - self.saturation, upper=1 + self.saturation)
+        image = tf.image.random_hue(image, max_delta=self.hue)
+        return image
+
+    def call(self, x, training=True):
+        if training:
+            x = tf.map_fn(self.jitter_fn, x)
+        return x
 
 
 class Preprocessor:
@@ -24,6 +41,7 @@ class Preprocessor:
         self.image_size = image_size
         self.seed = seed
         self.batch_size = batch_size
+        self.minority_indices = None 
 
         # Dictionary of available augmentation strategies
         # Each entry is a name mapped to either a Sequential pipeline or a callable layer (like MixUp or CutMix)
@@ -36,9 +54,7 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.05),
                 keras.layers.RandomZoom(0.05),
                 keras.layers.RandomContrast(0.1),
-                RandomColorJitter(  # Combines brightness, contrast, saturation, hue
-                    value_range=(0, 1), brightness_factor=0.05, contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
-                ),
+                ColorJitter(brightness=0.05, contrast=0.05, saturation=0.05, hue=0.01),
                 keras.layers.RandomSharpness(factor=0.2),
             ]),
 
@@ -47,9 +63,7 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.1),
                 keras.layers.RandomZoom(0.1),
                 keras.layers.RandomTranslation(0.05, 0.05),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.1, contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
-                ),
+                ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02),
                 keras.layers.RandomSharpness(factor=0.3),
             ]),
 
@@ -58,23 +72,25 @@ class Preprocessor:
                 keras.layers.RandomRotation(0.15),
                 keras.layers.RandomZoom(0.2),
                 keras.layers.RandomTranslation(0.1, 0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.2, contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
-                ),
+                ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.05),
                 keras.layers.RandomSharpness(factor=0.4),
             ]),
-
-            # "grayscale": keras.Sequential([
-            #     # Acho que aqui podíamos adicionar outro tipo de augmentations com uma dada probabilidade
-            #     keras.layers.RandomGrayscale(factor=1.0),
-            #     keras.layers.RandomContrast(0.4),
-            # ]),
 
             "grayscale": keras.Sequential([
                 keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
                 keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
                 keras.layers.RandomContrast(0.4),
             ]),
+
+            "grayscale_plus": keras.Sequential([
+                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+                keras.layers.RandomContrast(0.4),
+                keras.layers.RandomSharpness(0.3),
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomRotation(0.1),
+                keras.layers.RandomZoom(0.1),
+            ]), 
 
             "randaugment": RandAugment(
                 value_range=(0, 255),
@@ -92,30 +108,146 @@ class Preprocessor:
                 seed=seed
             ),
 
-            "cutmix": CutMix(
-                # Cuts a part of one image and past it in another, and mixes the labels
-                # Alpha is the parameter of the bata distribution that samples lambda, 
-                # that defines the proportion of the image that is cut
-                alpha=1.0,
-                seed=seed
-            ),
-        }
+            "geometric_transformations": keras.Sequential([
+                keras.layers.RandomFlip("horizontal"),
+                keras.layers.RandomFlip("vertical"),
+                keras.layers.RandomRotation(0.1),
+                keras.layers.RandomZoom(0.1),
+                keras.layers.RandomTranslation(0.1, 0.1),
+            ]), 
 
-
-    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, augment_prob=1.0, oversampling=False, shuffle=False):
+            "color_lightening": keras.Sequential([
+                ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
+            ])}
         
-        """
-        Parameters:
-        - data_dir: path to image folder
-        - minority_class: labels of the classes considered minority
-        - label_mode: "categorical" = one-hot encoding
-        - augment: name of the augmentation strategy to apply
-        - cache: whether to use caching and prefetching for performance
-        - preprocessing_function: if we are doing preprocessing for a pretrained model, we want to pass in this function 
-        the preprocessing pipeline that is suitable for this model
-        - augment_prob: float in [0,1] that controls probability of applying augmentation
-        - oversampling: if we want to do oversampling
-        """
+    # def _oversample_minority_fixed_size(self, image_batch, label_batch):
+    #     target_size = self.batch_size
+
+    #     # Get class indices from one-hot encoded labels
+    #     class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+    #     minority_indices_tf = tf.constant(self.minority_indices, dtype=tf.int32)
+
+    #     # Boolean mask for minority class samples
+    #     is_minority = tf.reduce_any(
+    #         tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
+    #     )
+
+    #     # Select minority samples
+    #     minority_images = tf.boolean_mask(image_batch, is_minority)
+    #     minority_labels = tf.boolean_mask(label_batch, is_minority)
+
+    #     # Augment batch
+    #     image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+    #     label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+    #     # Shuffle
+    #     indices = tf.range(tf.shape(image_batch_augmented)[0])
+    #     shuffled_indices = tf.random.shuffle(indices)
+    #     image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
+    #     label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
+
+    #     current_size = tf.shape(image_batch_augmented)[0]
+
+    #     def truncate():
+    #         return image_batch_augmented[:target_size], label_batch_augmented[:target_size]
+
+    #     def pad():
+    #         needed = target_size - current_size
+    #         rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
+    #         extra_images = tf.gather(image_batch_augmented, rand_indices)
+    #         extra_labels = tf.gather(label_batch_augmented, rand_indices)
+    #         return tf.concat([image_batch_augmented, extra_images], axis=0), tf.concat([label_batch_augmented, extra_labels], axis=0)
+
+    #     image_batch_final, label_batch_final = tf.cond(
+    #         current_size > target_size,
+    #         true_fn=truncate,
+    #         false_fn=pad
+    #     )
+
+    #     return image_batch_final, label_batch_final
+
+    def _oversample_minority_fixed_size(self, image_batch, label_batch):
+        target_size = self.batch_size
+
+        # 1. Identificar os índices das classes
+        class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
+        minority_indices_tf = tf.constant(self.minority_indices, dtype=tf.int32)
+
+        # 2. Criar máscara para identificar exemplos da minoria
+        is_minority = tf.reduce_any(
+            tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf),
+            axis=-1
+        )
+
+        # 3. Separar imagens e labels minoritários e maioritários
+        minority_images = tf.boolean_mask(image_batch, is_minority)
+        minority_labels = tf.boolean_mask(label_batch, is_minority)
+        majority_images = tf.boolean_mask(image_batch, tf.logical_not(is_minority))
+        majority_labels = tf.boolean_mask(label_batch, tf.logical_not(is_minority))
+
+        # 4. Concatenar o batch original com os exemplos minoritários (oversample)
+        image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
+        label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
+
+        # 5. Shuffle do batch aumentado
+        indices = tf.range(tf.shape(image_batch_augmented)[0])
+        shuffled_indices = tf.random.shuffle(indices)
+        image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
+        label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
+
+        current_size = tf.shape(image_batch_augmented)[0]
+
+        # 6. Definir o que fazer se o batch estiver demasiado grande ou pequeno
+        def truncate():
+            # Reembaralhar para garantir diversidade
+            idx = tf.range(current_size)
+            idx = tf.random.shuffle(idx)
+            idx = idx[:target_size]
+            return tf.gather(image_batch_augmented, idx), tf.gather(label_batch_augmented, idx)
+
+        def pad():
+            needed = target_size - current_size
+
+            maj_size = tf.shape(majority_images)[0]
+
+            # ⚠️ Proteção contra divisão por zero (caso extremo)
+            def pad_with_majority():
+                rand_indices = tf.random.uniform([needed], minval=0, maxval=maj_size, dtype=tf.int32)
+                extra_images = tf.gather(majority_images, rand_indices)
+                extra_labels = tf.gather(majority_labels, rand_indices)
+                return (
+                    tf.concat([image_batch_augmented, extra_images], axis=0),
+                    tf.concat([label_batch_augmented, extra_labels], axis=0)
+                )
+
+            def pad_with_original():
+                rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
+                extra_images = tf.gather(image_batch_augmented, rand_indices)
+                extra_labels = tf.gather(label_batch_augmented, rand_indices)
+                return (
+                    tf.concat([image_batch_augmented, extra_images], axis=0),
+                    tf.concat([label_batch_augmented, extra_labels], axis=0)
+                )
+
+            # Se tivermos maioritários disponíveis, usamos isso. Caso contrário, reciclamos o batch atual.
+            return tf.cond(
+                maj_size > 0,
+                true_fn=pad_with_majority,
+                false_fn=pad_with_original
+            )
+
+        image_batch_final, label_batch_final = tf.cond(
+            current_size > target_size,
+            true_fn=truncate,
+            false_fn=pad
+        )
+
+        return image_batch_final, label_batch_final
+
+
+
+    def load_img(self, data_dir, minority_class, label_mode="categorical", augment=None, cache=True, preprocessing_function=None, oversampling=False, shuffle=False):
+        
         if oversampling==True:
             batch_size = round(self.batch_size * 0.75)
         else:
@@ -138,185 +270,36 @@ class Preprocessor:
         # initializing the normalization layer
         normalization_layer = tf.keras.layers.Rescaling(1./255)
 
-        # if we wanto to do oversampling of the minority classes:
+        # if we want to do oversampling of the minority classes:
         if oversampling:
-            # minority_indices = [class_names.index(fam) for fam in minority_class]
-            minority_indices = [self.class_names.index(name) for name in minority_class]
-
-            # for images, labels in dataset:
-            #    for i in range(len(labels)):
-            #        label = tf.argmax(labels[i]).numpy()
-            #        if label in minority_indices:
-            #            print("aaa")
-
-            # Function to oversample minority class samples
-            # def oversample_minority(image_batch, label_batch):
-
-            #     # Get class indices from one-hot encoded labels
-            #     class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
-            #     minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
-
-            #     # Boolean mask for minority class samples
-            #     is_minority = tf.reduce_any(
-            #         tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
-            #     )
-
-            #     # Select minority samples
-            #     minority_images = tf.boolean_mask(image_batch, is_minority)
-            #     minority_labels = tf.boolean_mask(label_batch, is_minority)
-
-            #     # Duplicate them (once, can duplicate more if needed)   
-            #     image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
-            #     label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
-
-            #     # Shuffle the augmented batch
-            #     indices = tf.range(tf.shape(image_batch_augmented)[0])
-            #     shuffled_indices = tf.random.shuffle(indices)
-            #     image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
-            #     label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
-
-
-            #     return image_batch_augmented, label_batch_augmented
-
-
-            def oversample_minority_fixed_size(image_batch, label_batch):
-                # Target batch size
-                target_size = round(self.batch_size / 0.75)
-
-                # Get class indices from one-hot encoded labels
-                class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
-                minority_indices_tf = tf.constant(minority_indices, dtype=tf.int32)
-
-                # Boolean mask for minority class samples
-                is_minority = tf.reduce_any(
-                    tf.equal(tf.expand_dims(class_indices, axis=-1), minority_indices_tf), axis=-1
-                )
-
-                # Select minority samples
-                minority_images = tf.boolean_mask(image_batch, is_minority)
-                minority_labels = tf.boolean_mask(label_batch, is_minority)
-
-                # Augment: add minority samples to original batch
-                image_batch_augmented = tf.concat([image_batch, minority_images], axis=0)
-                label_batch_augmented = tf.concat([label_batch, minority_labels], axis=0)
-
-                # Shuffle
-                indices = tf.range(tf.shape(image_batch_augmented)[0])
-                shuffled_indices = tf.random.shuffle(indices)
-                image_batch_augmented = tf.gather(image_batch_augmented, shuffled_indices)
-                label_batch_augmented = tf.gather(label_batch_augmented, shuffled_indices)
-
-                current_size = tf.shape(image_batch_augmented)[0]
-
-                # If too large → truncate
-                def truncate():
-                    return image_batch_augmented[:target_size], label_batch_augmented[:target_size]
-
-                # If too small → resample to reach size
-                def pad():
-                    needed = target_size - current_size
-                    rand_indices = tf.random.uniform([needed], minval=0, maxval=current_size, dtype=tf.int32)
-                    extra_images = tf.gather(image_batch_augmented, rand_indices)
-                    extra_labels = tf.gather(label_batch_augmented, rand_indices)
-                    return tf.concat([image_batch_augmented, extra_images], axis=0), tf.concat([label_batch_augmented, extra_labels], axis=0)
-
-                # Choose truncate or pad based on current size
-                image_batch_final, label_batch_final = tf.cond(
-                    current_size > target_size,
-                    true_fn=truncate,
-                    false_fn=pad
-                )
-
-                return image_batch_final, label_batch_final
-
-
-            # Apply the oversampling logic to the dataset
-            dataset = dataset.map(oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
-        
+            self.minority_indices = [self.class_names.index(name) for name in minority_class]
+            dataset = dataset.map(self._oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
 
         if preprocessing_function is not None:
             dataset = dataset.map(lambda x, y: (preprocessing_function(x), y))
 
+
+        # Primeiro: normalização se necessário
+        if preprocessing_function is None and augment not in ["grayscale", "randaugment"]:
+            dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+
+        # Segundo: aplicar augmentations
         if augment:
+            aug_layer = self.augmentations.get(augment)
 
-            # If we are applying augmentation methods that change color, we should do normalization
-            # after applying the augmentation methods
+            if aug_layer is None:
+                raise ValueError(f"Unknown augmentation strategy: {augment}")
 
-            if augment in ["grayscale", "randaugment"]:
-                aug_layer = self.augmentations[augment]
-                # apply with probability
-                if augment_prob < 1.0:
-                    def augmentation_with_probability(aug_layer):
-                        def apply(x):
-                            return tf.cond(
-                            tf.random.uniform([]) < augment_prob,
-                            lambda: aug_layer(x),
-                            lambda: x)
-                        return keras.layers.Lambda(apply)
-                    aug_layer = augmentation_with_probability(aug_layer)
-
-
-                # applying the augmentation layer
-                dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
-                if preprocessing_function is None:
-                    dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
-            
-            # if the augmentation methods do not change the color of the images, 
-            # than we do normalization before applying augmentation 
+            if augment == "mixup":
+                def apply_mix(x, y):
+                    result = aug_layer({"images": x, "labels": y})
+                    return result["images"], result["labels"]
+                dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
             else:
-                if preprocessing_function is None:
-                    dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
+                dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
 
-                if augment not in self.augmentations:
-                    raise ValueError(f"Unknown augmentation strategy: {augment}")
-                
-                aug_layer = self.augmentations[augment]
-
-                # Handle MixUp and CutMix separately — they expect dict input and output 
-                # and are the mixes between 2 images
-                if isinstance(aug_layer, (MixUp, CutMix)):
-                    # Apply with probability
-                    if augment_prob < 1.0:
-                        def apply_mix(x, y):
-                            def apply_aug():
-                                result = aug_layer({"images": x, "labels": y})
-                                return result["images"], result["labels"]
-                            
-                            def skip_aug():
-                                return x, y
-
-                            return tf.cond(
-                                tf.random.uniform([]) < augment_prob,
-                                true_fn=apply_aug,
-                                false_fn=skip_aug
-                            )
-                    else:
-                        def apply_mix(x, y):
-                            result = aug_layer({"images": x, "labels": y})
-                            return result["images"], result["labels"]
-
-                    # applying the augmentation layer
-                    dataset = dataset.map(apply_mix, num_parallel_calls=tf.data.AUTOTUNE)
-                
-                # the other augmentations
-                else:
-                    # Apply with probability
-                    if augment_prob < 1.0:
-
-                        def augmentation_with_probability(aug_layer):
-                            def apply(x):
-                                return tf.cond(
-                                tf.random.uniform([]) < augment_prob,
-                                lambda: aug_layer(x),
-                                lambda: x)
-                            return keras.layers.Lambda(apply)
-
-                        aug_layer = augmentation_with_probability(aug_layer)
-                    
-                    # applying the augmentation layer
-                    dataset = dataset.map(lambda x, y: (aug_layer(x), y), num_parallel_calls=tf.data.AUTOTUNE)
-        else:
-            if preprocessing_function is None:
+            # Se a cor foi alterada, normalizar agora
+            if preprocessing_function is None and augment in ["grayscale", "randaugment"]:
                 dataset = dataset.map(lambda x, y: (normalization_layer(x), y))
 
         # Enable caching and prefetching for performance
@@ -324,11 +307,8 @@ class Preprocessor:
             dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
 
         return dataset, class_names
-
     
-    # defining funtion for the grey scale layer
-    def random_grayscale_layer(self, factor=1.0):
-        return keras.layers.RandomGrayscale(factor=factor)
+
     
 
 class Preprocessor_with_phylum:
@@ -340,54 +320,78 @@ class Preprocessor_with_phylum:
 
         # Dictionary of supported augmentation strategies
         self.augmentations = {
-            "none": keras.layers.Lambda(lambda x: x),  # No augmentation
-            "light": keras.Sequential([
-                keras.layers.RandomFlip("horizontal"),
-                keras.layers.RandomRotation(0.05),
-                keras.layers.RandomZoom(0.05),
-                keras.layers.RandomContrast(0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.05,
-                    contrast_factor=0.05, saturation_factor=0.05, hue_factor=0.01
-                ),
-                keras.layers.RandomSharpness(factor=0.2),
-            ]),
-            "medium": keras.Sequential([
-                keras.layers.RandomFlip("horizontal"),
-                keras.layers.RandomRotation(0.1),
-                keras.layers.RandomZoom(0.1),
-                keras.layers.RandomTranslation(0.05, 0.05),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.1,
-                    contrast_factor=0.15, saturation_factor=0.2, hue_factor=0.02
-                ),
-                keras.layers.RandomSharpness(factor=0.3),
-            ]),
-            "heavy": keras.Sequential([
-                keras.layers.RandomFlip("horizontal_and_vertical"),
-                keras.layers.RandomRotation(0.15),
-                keras.layers.RandomZoom(0.2),
-                keras.layers.RandomTranslation(0.1, 0.1),
-                RandomColorJitter(
-                    value_range=(0, 1), brightness_factor=0.2,
-                    contrast_factor=0.3, saturation_factor=0.3, hue_factor=0.05
-                ),
-                keras.layers.RandomSharpness(factor=0.4),
-            ]),
-            "grayscale": keras.Sequential([
-                keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),
-                keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),
-                keras.layers.RandomContrast(0.4),
-            ]),
-            "randaugment": RandAugment(
-                value_range=(0, 255),
-                augmentations_per_image=2,
-                magnitude=0.5,
-                seed=seed
-            ),
-            "mixup": MixUp(alpha=0.2, seed=seed),
-            "cutmix": CutMix(alpha=1.0, seed=seed),
-        }
+        "none": keras.layers.Lambda(lambda x: x),  # No augmentation
+
+        "light": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.05),
+            keras.layers.RandomZoom(0.05),
+            keras.layers.RandomContrast(0.1),
+            ColorJitter(brightness=0.05, contrast=0.05, saturation=0.05, hue=0.01),
+            keras.layers.RandomSharpness(factor=0.2),
+        ]),
+
+        "medium": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+            keras.layers.RandomTranslation(0.05, 0.05),
+            ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02),
+            keras.layers.RandomSharpness(factor=0.3),
+        ]),
+
+        "heavy": keras.Sequential([
+            keras.layers.RandomFlip("horizontal_and_vertical"),
+            keras.layers.RandomRotation(0.15),
+            keras.layers.RandomZoom(0.2),
+            keras.layers.RandomTranslation(0.1, 0.1),
+            ColorJitter(brightness=0.2, contrast=0.3, saturation=0.3, hue=0.05),
+            keras.layers.RandomSharpness(factor=0.4),
+        ]),
+
+        "grayscale": keras.Sequential([
+            keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+            keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+            keras.layers.RandomContrast(0.4),
+        ]),
+
+        "grayscale_plus": keras.Sequential([
+            keras.layers.Lambda(lambda x: tf.image.rgb_to_grayscale(x)),        # Convert to (H, W, 1)
+            keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),        # Convert back to (H, W, 3)
+            keras.layers.RandomContrast(0.4),
+            keras.layers.RandomSharpness(0.3),
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+        ]), 
+
+        "randaugment": RandAugment(
+            value_range=(0, 255),
+            augmentations_per_image=2,
+            magnitude=0.5,
+            seed=seed
+        ),
+
+        "mixup": MixUp(
+            # Mixes 2 images - alpha controls the parameter of the beta dsitribution 
+            # where the coefficient for the linear combination is sampled
+            # =0.2 is a default parameter, usually mixed images more similar to the one of the originals
+            # Encorages generalization, reduces overfitting 
+            alpha=0.2,
+            seed=seed
+        ),
+
+        "geometric_transformations": keras.Sequential([
+            keras.layers.RandomFlip("horizontal"),
+            keras.layers.RandomFlip("vertical"),
+            keras.layers.RandomRotation(0.1),
+            keras.layers.RandomZoom(0.1),
+            keras.layers.RandomTranslation(0.1, 0.1),
+        ]), 
+
+        "color_lightening": keras.Sequential([
+            ColorJitter(brightness=0.1, contrast=0.15, saturation=0.2, hue=0.02)
+        ])}
 
     def load_img(self, df, minority_class, family_encoder, shuffle=False, augment=None, cache=True, preprocessing_function=None, oversampling=False):
         # Adjust batch size when oversampling is enabled
@@ -399,11 +403,11 @@ class Preprocessor_with_phylum:
         # Extract file paths and family labels from DataFrame
         file_paths = df['full_file_path'].values
         family_onehot = np.stack(df["family_onehot"].values)
-        dataset = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
+        phylum_onehot = np.stack(df["phylum_onehot"].values)
 
-        # Optionally shuffle the dataset
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed)
+        # Create datasets
+        image_label_ds = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
+        phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
 
         # Define a function to load and resize images from file paths
         def _load_image(file_path, label):
@@ -413,25 +417,33 @@ class Preprocessor_with_phylum:
             return image, label
 
         # Apply image loading logic
-        dataset = dataset.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
+        image_label_ds = image_label_ds.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
 
-        # Add phylum labels as a second input stream
-        phylum_onehot = np.stack(df["phylum_onehot"].values)
-        phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
+        # Zip inputs together: ((image, family), phylum)
+        dataset = tf.data.Dataset.zip((image_label_ds, phylum_ds))
 
-        # Combine family and phylum into a single dataset
-        dataset = tf.data.Dataset.zip((dataset, phylum_ds))
+        # Format the dataset into model input format: {"image_input", "phylum_input"} → label
+        dataset = dataset.map(
+            lambda x, phylum: ({"image_input": x[0], "phylum_input": phylum}, x[1]),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
+
+        # ✅ Shuffle here (after pairing everything), so everything stays in sync
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed, reshuffle_each_iteration=True)
+
+        # Continue with batching and prefetching
         dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-        # Format the dataset into input dicts for model: {"image_input", "phylum_input"} → label
-        dataset = dataset.map(lambda x, phylum: ({"image_input": x[0], "phylum_input": phylum}, x[1]), num_parallel_calls=tf.data.AUTOTUNE)
 
         # Save class names for later reference
         class_names = family_encoder.classes_.tolist()
         self.class_names = class_names
 
-        # Default normalization (if no preprocessing function is given)
+        # Normalization
         normalization_layer = tf.keras.layers.Rescaling(1./255)
+
+        # The rest of your code (oversampling, augmentations, etc.) goes below...
+        # (You don’t need to change those parts)
 
         # Optional oversampling logic to balance minority classes in each batch
         if oversampling:
@@ -443,7 +455,7 @@ class Preprocessor_with_phylum:
                 image_batch = inputs["image_input"]
                 phylum_batch = inputs["phylum_input"]
 
-                target_size = round(self.batch_size / 0.75)
+                target_size = self.batch_size
 
                 # Identify which examples in the batch are minority
                 class_indices = tf.cast(tf.argmax(label_batch, axis=-1), tf.int32)
@@ -539,7 +551,7 @@ class Preprocessor_with_phylum:
 
 
 class Experiment:
-    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True):
+    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True, save_model=True):
         self.model = model
         self.train_ds = train_ds
         self.val_ds = val_ds
@@ -548,6 +560,7 @@ class Experiment:
         self.image_size = image_size
         self.log_path = Path(log_path)
         self.resume = resume
+        self.save_model = save_model
 
         # Generate a timestamp
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -642,10 +655,13 @@ class Experiment:
                 train_ds=self.train_ds,
                 val_ds=self.val_ds,
                 log_path=self.log_path
-            ),
-            EarlyStopping(patience=3, restore_best_weights=True),
-            ModelCheckpoint(checkpoint_path, save_best_only=True)
+            )
         ]
+
+        if self.save_model:
+            default_callbacks.append(
+                ModelCheckpoint(checkpoint_path, save_best_only=True)
+            )
 
         if callbacks:
             all_callbacks = default_callbacks + callbacks
