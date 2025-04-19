@@ -256,10 +256,9 @@ class Preprocessor:
             interpolation="bilinear"
         )
 
-        self.class_names = dataset.class_names
+        norm_layer = tf.keras.layers.Rescaling(1.0 / 255)
 
-        # initializing the normalization layer
-        norm_layer = tf.keras.layers.Rescaling(1./255)
+        self.class_names = dataset.class_names
 
         if oversampling:
             self.minority_class_indices = [
@@ -297,9 +296,6 @@ class Preprocessor:
                         lambda x, y: (aug_fn(x), y),
                         num_parallel_calls=tf.data.AUTOTUNE
                     )
-
-            # STEP 2: Normalize afterwards
-            norm_layer = tf.keras.layers.Rescaling(1.0 / 255)
 
             if augment != "mixup":
                 dataset = dataset.map(
