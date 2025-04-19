@@ -477,7 +477,13 @@ class Preprocessor_with_phylum:
             )
 
             return image_batch_final, label_batch_final
-
+    
+    # Define a function to load and resize images from file paths
+    def _load_image(file_path, label):
+        image = tf.io.read_file(file_path)
+        image = tf.image.decode_jpeg(image, channels=3)
+        image = tf.image.resize(image, self.image_size)
+        return image, label
 
     def load_img(self, df, minority_class, family_encoder, shuffle=False, augment=None, cache=True, preprocessing_function=None, oversampling=False):
         # Adjust batch size when oversampling is enabled
@@ -495,15 +501,8 @@ class Preprocessor_with_phylum:
         image_label_ds = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
         phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
 
-        # Define a function to load and resize images from file paths
-        def _load_image(file_path, label):
-            image = tf.io.read_file(file_path)
-            image = tf.image.decode_jpeg(image, channels=3)
-            image = tf.image.resize(image, self.image_size)
-            return image, label
-
         # Apply image loading logic
-        image_label_ds = image_label_ds.map(_load_image, num_parallel_calls=tf.data.AUTOTUNE)
+        image_label_ds = image_label_ds.map(self._load_image, num_parallel_calls=tf.data.AUTOTUNE)
 
         # Zip inputs together: ((image, family), phylum)
         dataset = tf.data.Dataset.zip((image_label_ds, phylum_ds))
@@ -547,36 +546,38 @@ class Preprocessor_with_phylum:
                 {"image_input": preprocessing_function(x["image_input"]), "phylum_input": x["phylum_input"]},
                 y
             ))
+        else:
+            # Apply augmentations
+            if augment:
+                if augment not in self.augmentations:
+                    raise ValueError(f"Unknown augmentation strategy: {augment}")
 
-        # Apply augmentations
-        if augment:
-            if augment not in self.augmentations:
-                raise ValueError(f"Unknown augmentation strategy: {augment}")
+                aug_layer = self.augmentations[augment]
 
-            aug_layer = self.augmentations[augment]
+                # Handle mixup/cutmix (needs special treatment)
+                if augment=="mixup":
+                    dataset = dataset.map(lambda x, y: (
+                        {"image_input": normalization_layer(x["image_input"]), "phylum_input": x["phylum_input"]}, y
+                    ))
+                    def apply_mixup_with_phylum(x, y):
+                        mix_result = aug_layer({"images": x["image_input"], "labels": y})
+                        return {
+                            "image_input": mix_result["images"],
+                            "phylum_input": x["phylum_input"]  # phylum stays the same
+                        }, mix_result["labels"]
 
-            # Handle mixup/cutmix (needs special treatment)
-            if isinstance(aug_layer, (MixUp, CutMix)):
-                def apply_mixup_with_phylum(x, y):
-                    mix_result = aug_layer({"images": x["image_input"], "labels": y})
-                    return {
-                        "image_input": mix_result["images"],
-                        "phylum_input": x["phylum_input"]  # phylum stays the same
-                    }, mix_result["labels"]
+                    dataset = dataset.map(apply_mixup_with_phylum, num_parallel_calls=tf.data.AUTOTUNE)
+                else:
+                    # Apply standard augmentations to image_input only
+                    def apply_aug(x, y):
+                        return {
+                            "image_input": aug_layer(x["image_input"]),
+                            "phylum_input": x["phylum_input"]
+                        }, y
 
-                dataset = dataset.map(apply_mixup_with_phylum, num_parallel_calls=tf.data.AUTOTUNE)
-            else:
-                # Apply standard augmentations to image_input only
-                def apply_aug(x, y):
-                    return {
-                        "image_input": aug_layer(x["image_input"]),
-                        "phylum_input": x["phylum_input"]
-                    }, y
-
-                dataset = dataset.map(apply_aug, num_parallel_calls=tf.data.AUTOTUNE)
-        else:   
-            # If no augment and no preprocessing, apply basic normalization
-            if preprocessing_function is None:
+                    dataset = dataset.map(apply_aug, num_parallel_calls=tf.data.AUTOTUNE)
+            
+            if augment != "mixup":
                 dataset = dataset.map(lambda x, y: (
                     {"image_input": normalization_layer(x["image_input"]), "phylum_input": x["phylum_input"]}, y
                 ))
