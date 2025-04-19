@@ -474,12 +474,6 @@ class Preprocessor_with_phylum:
 
             return image_batch_final, label_batch_final
     
-    # Define a function to load and resize images from file paths
-    def _load_image(file_path, label):
-        image = tf.io.read_file(file_path)
-        image = tf.image.decode_jpeg(image, channels=3)
-        image = tf.image.resize(image, self.image_size)
-        return image, label
 
     def load_img(self, df, minority_class, family_encoder, shuffle=False, augment=None, cache=True, preprocessing_function=None, oversampling=False):
         # Adjust batch size when oversampling is enabled
@@ -496,6 +490,13 @@ class Preprocessor_with_phylum:
         # Create datasets
         image_label_ds = tf.data.Dataset.from_tensor_slices((file_paths, family_onehot))
         phylum_ds = tf.data.Dataset.from_tensor_slices(phylum_onehot)
+
+        # Define a function to load and resize images from file paths
+        def _load_image(file_path, label):
+            image = tf.io.read_file(file_path)
+            image = tf.image.decode_jpeg(image, channels=3)
+            image = tf.image.resize(image, self.image_size)
+            return image, label
 
         # Apply image loading logic
         image_label_ds = image_label_ds.map(self._load_image, num_parallel_calls=tf.data.AUTOTUNE)
