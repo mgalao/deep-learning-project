@@ -9,3 +9,5 @@ checkpoints/
 venv/
 *.csv
 *.keras
+*.json
+*.h5
