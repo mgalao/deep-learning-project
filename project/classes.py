@@ -46,6 +46,7 @@ class CustomMixUp(tf.keras.layers.Layer):
     def call(self, inputs):
         x, y = inputs["images"], inputs["labels"]
         batch_size = tf.shape(x)[0]
+        lam = np.random.beta(self.alpha, self.alpha)
         lam = tf.clip_by_value(lam, 0.2, 0.8)
 
         indices = tf.random.shuffle(tf.range(batch_size))
