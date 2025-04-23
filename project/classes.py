@@ -718,4 +718,24 @@ class Experiment:
         return history
     
 
+class ProgressiveUnfreeze(tf.keras.callbacks.Callback):
+    def __init__(self, base_model):
+        super().__init__()
+        self.base_model = base_model
+        self.layer_index = len(self.base_model.layers) - 1  
+
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch % 2 == 0 and self.layer_index >= 0:  
+            while self.layer_index >= 0:
+                layer = self.base_model.layers[self.layer_index]
+                if not isinstance(layer, tf.keras.layers.BatchNormalization):
+                    layer.trainable = True
+                    print(f"Epoch {epoch}: Layer now unfrozen {self.layer_index} ({layer.name})")
+                    self.layer_index -= 1  
+                    break
+                else:
+                    self.layer_index -= 1
+
+
+
 
