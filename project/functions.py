@@ -8,6 +8,9 @@ from keras.callbacks import ModelCheckpoint, CSVLogger, LearningRateScheduler
 from functools import partial
 from pathlib import Path
 import tensorflow as tf
+from sklearn.metrics import classification_report, f1_score, precision_score, recall_score, accuracy_score
+from tensorflow.keras.models import load_model
+
 
 
 def plot_batch(dataset, class_names, num_images, rows, cols):
@@ -135,4 +138,27 @@ def exp_decay_lr_scheduler(epoch, lr, factor = 0.95):
 def lr_scheduler(initial_lr, final_lr, n_epochs):
     factor = (final_lr / initial_lr) ** (1 / n_epochs)
     return partial(exp_decay_lr_scheduler, factor=factor)
+
+
+def get_metric(dataset, model_name):
+    print(f"\nEvaluating model: {model_name}")
+    model = load_model(model_name)
+
+    y_true = []
+    y_pred = []
+
+    for batch_x, batch_y in dataset:  # You were using train_ds, but use val_ds to match your validation metrics
+        preds = model.predict(batch_x, verbose=0)
+        y_true.append(np.argmax(batch_y.numpy(), axis=1))
+        y_pred.append(np.argmax(preds, axis=1))
+
+    y_true = np.concatenate(y_true)
+    y_pred = np.concatenate(y_pred)
+
+    print(classification_report(y_true, y_pred, digits=4))
+    print("Accuracy     :", accuracy_score(y_true, y_pred))
+    print("F1 (macro)   :", f1_score(y_true, y_pred, average="macro"))
+    print("Precision    :", precision_score(y_true, y_pred, average="macro"))
+    print("Recall       :", recall_score(y_true, y_pred, average="macro"))
+
 
