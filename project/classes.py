@@ -56,8 +56,13 @@ class CustomMixUp(tf.keras.layers.Layer):
         x_mix = lam * x + (1 - lam) * x2
         y_mix = lam * y + (1 - lam) * y2
 
-        return {"images": x_mix, "labels": y_mix}
-
+        return {
+            "images": x_mix,
+            "labels": y_mix,
+            "lambda": lam,
+            "indices": indices
+        }
+    
 class Preprocessor:
     def __init__(self, image_size=(224, 224), seed=42, batch_size=32):
 
@@ -466,6 +471,10 @@ class Preprocessor_with_phylum:
         """
         Loads images and labels, applies optional augmentation, normalization, and oversampling.
         """
+        # Store encoders and corresponding class labels
+        self.family_class_names = family_encoder.classes_.tolist()
+        self.phylum_class_names = phylum_encoder.classes_.tolist()
+
         # Adjust batch size for oversampling mode
         batch_size = round(self.batch_size * 0.75) if oversampling else self.batch_size
 
@@ -489,22 +498,21 @@ class Preprocessor_with_phylum:
         # Shuffle dataset if requested
         if shuffle:
             dataset = dataset.shuffle(buffer_size=len(file_paths), seed=self.seed, reshuffle_each_iteration=True)
+            dataset = dataset.repeat() # Repeat only if shuffle is True -> training mode
 
-        # Batch and prefetch for performance
-        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-        # Store encoders and corresponding class labels
-        self.family_class_names = family_encoder.classes_.tolist()
-        self.phylum_class_names = phylum_encoder.classes_.tolist()
-
-        # Normalization layer
-        normalization_layer = tf.keras.layers.Rescaling(1./255)
+        # Batch the dataset
+        dataset = dataset.batch(batch_size)
 
         # Apply oversampling logic if enabled
         if oversampling:
-            self.minority_class_indices = [self.family_class_names.index(c) for c in minority_class]
+            self.minority_class_indices = [
+                self.family_class_names.index(c)
+                for c in minority_class
+                if c in self.family_class_names
+            ]
+            
             dataset = dataset.map(self._oversample_minority_fixed_size, num_parallel_calls=tf.data.AUTOTUNE)
-
+            
         # Apply preprocessing function (if any)
         if preprocessing_function:
             dataset = dataset.map(lambda x, y: (
@@ -520,15 +528,26 @@ class Preprocessor_with_phylum:
 
                 if augment == "mixup":
                     # MixUp requires normalized input before augmentation
+                    normalization_layer = tf.keras.layers.Rescaling(1./255)
                     dataset = dataset.map(lambda x, y: (
                         {"image_input": normalization_layer(x["image_input"]), "phylum_input": x["phylum_input"]}, y
                     ))
 
                     def apply_mixup(x, y):
-                        mixed = aug_layer({"images": x["image_input"], "labels": y})
+                        mixed = aug_layer({
+                            "images": x["image_input"],
+                            "labels": y
+                        })
+
+                        lam = mixed["lambda"]
+                        indices = mixed["indices"]
+
+                        phylum = x["phylum_input"]
+                        phylum_mix = lam * phylum + (1 - lam) * tf.gather(phylum, indices)
+
                         return {
                             "image_input": mixed["images"],
-                            "phylum_input": x["phylum_input"]
+                            "phylum_input": phylum_mix
                         }, mixed["labels"]
 
                     dataset = dataset.map(apply_mixup, num_parallel_calls=tf.data.AUTOTUNE)
@@ -537,24 +556,27 @@ class Preprocessor_with_phylum:
                     # Standard augmentation and normalization
                     dataset = dataset.map(lambda x, y: (
                         {
-                            "image_input": normalization_layer(aug_layer(x["image_input"])),
+                            "image_input": aug_layer(x["image_input"]),
                             "phylum_input": x["phylum_input"]
                         }, y
                     ), num_parallel_calls=tf.data.AUTOTUNE)
 
         # Cache dataset for speed
         if cache:
-            dataset = dataset.cache().prefetch(tf.data.AUTOTUNE)
+            dataset = dataset.cache()
+
+        # Prefetch right before final output
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
         return dataset, self.family_class_names, self.phylum_class_names
-    
 
 class Experiment:
-    def __init__(self, model, train_ds, val_ds, experiment_name, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True, save_model=True):
+    def __init__(self, model, train_ds, val_ds, experiment_name, phylum=False, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True, save_model=True):
         self.model = model
         self.train_ds = train_ds
         self.val_ds = val_ds
         self.experiment_name = experiment_name
+        self.phylum = phylum
         self.batch_size = batch_size
         self.image_size = image_size
         self.log_path = Path(log_path)
@@ -668,36 +690,24 @@ class Experiment:
             all_callbacks = default_callbacks
 
         # Training
-        history = self.model.fit(
-            self.train_ds,
-            validation_data=self.val_ds,
-            epochs=epochs,
-            initial_epoch=initial_epoch,
-            callbacks=all_callbacks,
-            verbose=1
-        )
+        if self.phylum: # If using phylum data, add steps_per_epoch
+            history = self.model.fit(
+                self.train_ds,
+                validation_data=self.val_ds,
+                steps_per_epoch=350, 
+                epochs=epochs,
+                initial_epoch=initial_epoch,
+                callbacks=all_callbacks,
+                verbose=1
+            )
+        else:
+            history = self.model.fit(
+                self.train_ds,
+                validation_data=self.val_ds,
+                epochs=epochs,
+                initial_epoch=initial_epoch,
+                callbacks=all_callbacks,
+                verbose=1
+            )
 
         return history
-    
-
-class ProgressiveUnfreeze(tf.keras.callbacks.Callback):
-    def __init__(self, base_model):
-        super().__init__()
-        self.base_model = base_model
-        self.layer_index = len(self.base_model.layers) - 1  
-
-    def on_epoch_end(self, epoch, logs=None):
-        if epoch % 2 == 0 and self.layer_index >= 0:  
-            while self.layer_index >= 0:
-                layer = self.base_model.layers[self.layer_index]
-                if not isinstance(layer, tf.keras.layers.BatchNormalization):
-                    layer.trainable = True
-                    print(f"Epoch {epoch}: Layer now unfrozen {self.layer_index} ({layer.name})")
-                    self.layer_index -= 1  
-                    break
-                else:
-                    self.layer_index -= 1
-
-
-
-
