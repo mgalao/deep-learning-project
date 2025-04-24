@@ -571,12 +571,12 @@ class Preprocessor_with_phylum:
         return dataset, self.family_class_names, self.phylum_class_names
 
 class Experiment:
-    def __init__(self, model, train_ds, val_ds, experiment_name, phylum=False, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=True, save_model=True):
+    def __init__(self, model, train_ds, val_ds, experiment_name, steps_per_epoch=None, batch_size=32, image_size=(224, 224), log_path="experiment_log.csv", resume=False, save_model=True):
         self.model = model
         self.train_ds = train_ds
         self.val_ds = val_ds
         self.experiment_name = experiment_name
-        self.phylum = phylum
+        self.steps_per_epoch = steps_per_epoch
         self.batch_size = batch_size
         self.image_size = image_size
         self.log_path = Path(log_path)
@@ -690,11 +690,11 @@ class Experiment:
             all_callbacks = default_callbacks
 
         # Training
-        if self.phylum: # If using phylum data, add steps_per_epoch
+        if self.steps_per_epoch: # If using phylum data, add steps_per_epoch
             history = self.model.fit(
                 self.train_ds,
                 validation_data=self.val_ds,
-                steps_per_epoch=350, 
+                steps_per_epoch=self.steps_per_epoch,
                 epochs=epochs,
                 initial_epoch=initial_epoch,
                 callbacks=all_callbacks,
