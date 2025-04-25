@@ -625,7 +625,7 @@ class Experiment:
                 "f1_train_macro": r(logs.get("f1_macro")),
                 "f1_val_macro": r(logs.get("val_f1_macro")),
                 "f1_train_weighted": r(logs.get("f1_weighted")),
-                "f1_val_weighted": r(logs.get("f1_val_weighted")),
+                "f1_val_weighted": r(logs.get("val_f1_weighted")),
                 "top5_train_accuracy": r(logs.get("top5_accuracy")),
                 "top5_val_accuracy": r(logs.get("val_top5_accuracy")),
                 "timestamp": timestamp
@@ -654,15 +654,30 @@ class Experiment:
                 try:
                     log_df = pd.read_csv(self.log_path)
                     if "epoch" in log_df.columns and not log_df.empty:
-                        initial_epoch = int(log_df[log_df["experiment_name"] == self.experiment_name]["epoch"].max())
-                        print(f"Resuming training from epoch {initial_epoch}")
-                        self.model = load_model(latest_checkpoint)
-                        checkpoint_path = latest_checkpoint
+                        # Extract timestamp from filename
+                        last_timestamp = latest_checkpoint.split("_")[-1].replace(".keras", "")
+                        
+                        # Try to find the log entry that matches both experiment_name AND timestamp
+                        log_subset = log_df[
+                            (log_df["experiment_name"] == self.experiment_name) &
+                            (log_df["timestamp"].str.replace("[- :]", "").str.startswith(last_timestamp))
+                        ]
+
+                        if not log_subset.empty:
+                            initial_epoch = int(log_subset["epoch"].max())
+                            print(f"Resuming training from epoch {initial_epoch}")
+                            self.model = load_model(latest_checkpoint)
+                            checkpoint_path = latest_checkpoint
+                        else:
+                            print("Matching log entry not found for latest checkpoint. Starting from scratch.")
+                    else:
+                        print("Log is empty or missing 'epoch' column. Starting from scratch.")
                 except Exception as e:
                     print(f"Could not read log or load model: {e}")
                     print("Starting from scratch.")
             else:
                 print("No checkpoint found, starting from scratch.")
+
 
         if not checkpoint_path:
             self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -711,3 +726,22 @@ class Experiment:
             )
 
         return history
+    
+
+class ProgressiveUnfreeze(tf.keras.callbacks.Callback):
+    def __init__(self, base_model):
+        super().__init__()
+        self.base_model = base_model
+        self.layer_index = len(self.base_model.layers) - 1  
+
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch % 2 == 0 and self.layer_index >= 0:  
+            while self.layer_index >= 0:
+                layer = self.base_model.layers[self.layer_index]
+                if not isinstance(layer, tf.keras.layers.BatchNormalization):
+                    layer.trainable = True
+                    print(f"Epoch {epoch}: Layer now unfrozen {self.layer_index} ({layer.name})")
+                    self.layer_index -= 1  
+                    break
+                else:
+                    self.layer_index -= 1
