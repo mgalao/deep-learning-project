@@ -647,29 +647,35 @@ class Experiment:
             checkpoint_files = sorted(glob.glob(pattern))
 
             if checkpoint_files:
-                # Sort by timestamp in filename and pick the latest
-                checkpoint_files = sorted(checkpoint_files, key=lambda x: x.split("_")[-1].replace(".keras", ""))
+                # Sort checkpoint files by timestamp extracted from filename
+                checkpoint_files = sorted(
+                    checkpoint_files,
+                    key=lambda x: x.split("_")[-1].replace(".keras", "")
+                )
                 latest_checkpoint = checkpoint_files[-1]
 
                 try:
                     log_df = pd.read_csv(self.log_path)
-                    if "epoch" in log_df.columns and not log_df.empty:
-                        # Extract timestamp from filename
-                        last_timestamp = latest_checkpoint.split("_")[-1].replace(".keras", "")
-                        
-                        # Try to find the log entry that matches both experiment_name AND timestamp
-                        log_subset = log_df[
-                            (log_df["experiment_name"] == self.experiment_name) &
-                            (log_df["timestamp"].str.replace("[- :]", "").str.startswith(last_timestamp))
-                        ]
 
-                        if not log_subset.empty:
-                            initial_epoch = int(log_subset["epoch"].max())
-                            print(f"Resuming training from epoch {initial_epoch}")
+                    if "epoch" in log_df.columns and not log_df.empty:
+                        # Filter logs for this experiment
+                        experiment_logs = log_df[log_df["experiment_name"] == self.experiment_name].copy()
+
+                        # Convert to datetime for accurate sorting
+                        experiment_logs["timestamp"] = pd.to_datetime(experiment_logs["timestamp"])
+
+                        if not experiment_logs.empty:
+                            # Get latest run by timestamp
+                            latest_entry = experiment_logs.sort_values("timestamp").iloc[-1]
+                            initial_epoch = int(latest_entry["epoch"])
+                            self.timestamp = latest_entry["timestamp"].strftime("%Y%m%d-%H%M%S")
+                            self.experiment_id = int(latest_entry["id"])
+
+                            print(f"Resuming training from epoch {initial_epoch} (timestamp {self.timestamp})")
                             self.model = load_model(latest_checkpoint)
                             checkpoint_path = latest_checkpoint
                         else:
-                            print("Matching log entry not found for latest checkpoint. Starting from scratch.")
+                            print("No matching log entries found. Starting from scratch.")
                     else:
                         print("Log is empty or missing 'epoch' column. Starting from scratch.")
                 except Exception as e:
@@ -677,7 +683,6 @@ class Experiment:
                     print("Starting from scratch.")
             else:
                 print("No checkpoint found, starting from scratch.")
-
 
         if not checkpoint_path:
             self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
