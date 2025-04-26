@@ -161,4 +161,4 @@ def get_metric(dataset, model_name):
     print("Precision    :", precision_score(y_true, y_pred, average="macro"))
     print("Recall       :", recall_score(y_true, y_pred, average="macro"))
 
-
+    return y_true, y_pred
