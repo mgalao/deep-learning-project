@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import os
 import shutil
 from tensorflow.keras.preprocessing import image_dataset_from_directory
@@ -9,8 +10,8 @@ from functools import partial
 from pathlib import Path
 import tensorflow as tf
 from sklearn.metrics import classification_report, f1_score, precision_score, recall_score, accuracy_score
+from sklearn.metrics import confusion_matrix
 from tensorflow.keras.models import load_model
-
 
 
 def plot_batch(dataset, class_names, num_images, rows, cols):
@@ -147,7 +148,7 @@ def get_metric(dataset, model_name):
     y_true = []
     y_pred = []
 
-    for batch_x, batch_y in dataset:  # You were using train_ds, but use val_ds to match your validation metrics
+    for batch_x, batch_y in dataset:
         preds = model.predict(batch_x, verbose=0)
         y_true.append(np.argmax(batch_y.numpy(), axis=1))
         y_pred.append(np.argmax(preds, axis=1))
@@ -162,3 +163,83 @@ def get_metric(dataset, model_name):
     print("Recall       :", recall_score(y_true, y_pred, average="macro"))
 
     return y_true, y_pred
+
+
+def plot_confusion_matrix(y_true, y_pred, class_names, figsize=(35, 30), fontsize=10, title="Confusion Matrix"):
+    # Generate the confusion matrix
+    cm = confusion_matrix(y_true, y_pred, labels=range(len(class_names)))
+
+    # Plot the heatmap
+    plt.figure(figsize=figsize)
+    ax = sns.heatmap(
+        cm,
+        cmap="Blues",
+        square=True,
+        xticklabels=class_names,
+        yticklabels=class_names,
+        cbar_kws={"shrink": 0.5}
+    )
+
+    # Add titles and labels
+    plt.title(title, fontsize=24, pad=20)
+    plt.xlabel("Predicted Label", fontsize=20, labelpad=10)
+    plt.ylabel("True Label", fontsize=20, labelpad=10)
+
+    # Rotate and increase font size for labels
+    plt.xticks(rotation=90, fontsize=fontsize)
+    plt.yticks(fontsize=fontsize)
+
+    # Show the plot with tight layout
+    plt.tight_layout()
+    plt.show()
+
+
+def show_correct_predictions_for_family(y_true, y_pred, pred_probs_all, test_images, class_names, family_name, num_images=6):
+    # Find the index of the family
+    matches = np.where(class_names == family_name)[0]
+    if len(matches) == 0:
+        print(f"Family '{family_name}' not found in class names.")
+        return
+    family_idx = matches[0]
+
+    # Convert y_true to class labels
+    y_true_labels = np.argmax(y_true, axis=1)
+
+    # Get indices of correctly classified images for that family
+    correct_indices = np.where((y_true_labels == y_pred) & (y_true_labels == family_idx))[0]
+
+    if len(correct_indices) == 0:
+        print(f"No correct predictions found for family '{family_name}'.")
+        return
+
+    # Get confidences
+    confidences = np.max(pred_probs_all[correct_indices], axis=1)
+
+    # Sort by descending confidence
+    sorted_indices = np.argsort(confidences)[::-1]
+
+    # Select top examples
+    selected_indices = correct_indices[sorted_indices[:num_images]]
+
+    # Prepare images
+    images_to_show = []
+    for idx in selected_indices:
+        img = test_images[idx]
+        true_label = y_true_labels[idx]
+        pred_label = y_pred[idx]
+        confidence = np.max(pred_probs_all[idx])
+        images_to_show.append((img, true_label, pred_label, confidence))
+
+    # Plot
+    plt.figure(figsize=(16, 10))
+
+    for i, (img, true_label, pred_label, confidence) in enumerate(images_to_show):
+        plt.subplot(2, 3, i + 1)
+        plt.imshow(img.astype("uint8"))
+        plt.axis('off')
+        plt.title(f"True: {class_names[true_label]}\nPred: {class_names[pred_label]}\nConf: {confidence:.2f}",
+                  color='green', fontsize=10)
+
+    plt.suptitle(f"Most Confident Correct Predictions - {family_name}", fontsize=18)
+    plt.tight_layout()
+    plt.show()
