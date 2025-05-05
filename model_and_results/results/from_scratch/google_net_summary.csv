@@ -1,0 +1,6 @@
+Model,Train Loss,Validation Loss,Train Accuracy,Validation Accuracy,Train F1-Score,Validation F1-Score
+GoogLeNet Original,3.2043,3.9341,0.4379,0.2092,0.3435,0.1359
+GoogLeNet Modified,3.6404,3.9415,0.3179,0.1892,0.2212,0.1095
+GoogLeNet Hyperband 1,3.858174,4.156704,0.28875,0.171397,0.197119,0.102309
+GoogLeNet Hyperband 2,3.636937,4.085146,0.378393,0.197551,0.279707,0.123581
+GoogLeNet Hyperband 3,4.6765,4.537172,0.125982,0.1202,0.040281,0.035035
